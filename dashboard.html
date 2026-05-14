@@ -44,6 +44,22 @@
         .upload-zone input { display: none; }
         .file-loaded { padding: 12px 20px; background: rgba(16, 185, 129, 0.1); border-radius: 12px; color: var(--accent-green); font-size: 14px; display: flex; align-items: center; gap: 8px; }
 
+        /* WB API Panel */
+        .wb-api-panel { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 16px; padding: 20px; margin-bottom: 24px; display: none; }
+        .wb-api-panel.visible { display: block; }
+        .wb-api-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+        .wb-api-field { display: flex; flex-direction: column; gap: 4px; }
+        .wb-api-field label { font-size: 12px; color: var(--text-muted); }
+        .wb-api-field input { padding: 10px 14px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-primary); font-size: 13px; outline: none; }
+        .wb-api-field input:focus { border-color: var(--accent-purple); }
+        .wb-api-field input[type="date"] { cursor: pointer; }
+        .wb-api-btn { padding: 10px 24px; background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue)); border: none; border-radius: 8px; color: white; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.3s; white-space: nowrap; }
+        .wb-api-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4); }
+        .wb-api-btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+        .wb-api-toggle { padding: 8px 16px; background: linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(59, 130, 246, 0.2)); border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 8px; color: var(--accent-purple); font-size: 13px; cursor: pointer; transition: all 0.3s; }
+        .wb-api-toggle:hover { background: linear-gradient(135deg, rgba(139, 92, 246, 0.3), rgba(59, 130, 246, 0.3)); }
+        .wb-api-toggle.active { background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue)); color: white; }
+
         /* Tabs */
         .tabs { display: flex; gap: 8px; padding: 6px; background: var(--bg-card); border-radius: 16px; width: fit-content; margin-bottom: 24px; }
         .tab { padding: 12px 24px; background: transparent; border: none; border-radius: 12px; color: var(--text-secondary); font-size: 14px; cursor: pointer; transition: all 0.3s; }
@@ -152,16 +168,41 @@
                     <span>AI-powered analytics dashboard</span>
                 </div>
             </div>
-            <div style="display: flex; gap: 16px; align-items: center;">
+            <div style="display: flex; gap: 12px; align-items: center;">
                 <div id="fileInfo" class="file-loaded" style="display: none;">
                     <span>✓</span> <span id="fileName"></span>
                 </div>
                 <label class="upload-zone" id="uploadZone">
                     <input type="file" accept=".xlsx,.xls" id="fileInput">
-                    <span>📁</span> Загрузить Excel
+                    <span>📁</span> Excel
                 </label>
+                <button class="wb-api-toggle" id="wbApiToggle" onclick="toggleWbApiPanel()">🔗 WB API</button>
             </div>
         </header>
+
+        <!-- WB API Panel -->
+        <div class="wb-api-panel" id="wbApiPanel">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                <div style="font-weight: 600; display: flex; align-items: center; gap: 8px;">🔗 Загрузка из WB API</div>
+                <span style="font-size: 12px; color: var(--text-muted);">Sales Funnel API v3</span>
+            </div>
+            <div class="wb-api-row">
+                <div class="wb-api-field" style="flex: 1; min-width: 200px;">
+                    <label>API ключ (категория Аналитика)</label>
+                    <input type="password" id="wbApiKey" placeholder="Вставьте ваш WB API токен">
+                </div>
+                <div class="wb-api-field">
+                    <label>Период с</label>
+                    <input type="date" id="wbDateFrom">
+                </div>
+                <div class="wb-api-field">
+                    <label>Период по</label>
+                    <input type="date" id="wbDateTo">
+                </div>
+                <button class="wb-api-btn" id="wbApiFetchBtn" onclick="fetchFromWbApi()">📊 Загрузить</button>
+            </div>
+            <div id="wbApiStatus" style="margin-top: 12px; font-size: 13px; display: none;"></div>
+        </div>
 
         <div class="tabs">
             <button class="tab active" data-tab="command">📊 Командный центр</button>
@@ -233,6 +274,71 @@
                 document.getElementById(tab.dataset.tab).classList.add('active');
             });
         });
+
+        // Set default dates for WB API (last 7 days)
+        (function setDefaultDates() {
+            const today = new Date();
+            const weekAgo = new Date(today);
+            weekAgo.setDate(today.getDate() - 7);
+            const fmt = d => d.toISOString().split('T')[0];
+            document.getElementById('wbDateTo').value = fmt(today);
+            document.getElementById('wbDateFrom').value = fmt(weekAgo);
+        })();
+
+        // WB API panel toggle
+        function toggleWbApiPanel() {
+            const panel = document.getElementById('wbApiPanel');
+            const btn = document.getElementById('wbApiToggle');
+            panel.classList.toggle('visible');
+            btn.classList.toggle('active');
+        }
+
+        // Fetch from WB API
+        async function fetchFromWbApi() {
+            const apiKey = document.getElementById('wbApiKey').value.trim();
+            const dateFrom = document.getElementById('wbDateFrom').value;
+            const dateTo = document.getElementById('wbDateTo').value;
+            const statusEl = document.getElementById('wbApiStatus');
+            const btn = document.getElementById('wbApiFetchBtn');
+
+            if (!apiKey) { alert('Введите WB API ключ'); return; }
+            if (!dateFrom || !dateTo) { alert('Укажите период'); return; }
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> Загрузка...';
+            statusEl.style.display = 'block';
+            statusEl.style.color = 'var(--text-secondary)';
+            statusEl.textContent = 'Запрашиваем данные из WB API...';
+
+            try {
+                const res = await fetch(`${API_BASE}/api/fetch-from-wb`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        wb_api_key: apiKey,
+                        date_from: dateFrom,
+                        date_to: dateTo
+                    })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    statusEl.style.color = 'var(--accent-green)';
+                    statusEl.textContent = `✓ ${data.message}`;
+                    document.getElementById('fileInfo').style.display = 'flex';
+                    document.getElementById('fileName').textContent = `${data.products_count} товаров (WB API)`;
+                    loadDashboard();
+                } else {
+                    statusEl.style.color = 'var(--accent-red)';
+                    statusEl.textContent = `Ошибка: ${data.detail}`;
+                }
+            } catch (e) {
+                statusEl.style.color = 'var(--accent-red)';
+                statusEl.textContent = 'Ошибка подключения к серверу';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '📊 Загрузить';
+            }
+        }
 
         // File upload
         const uploadZone = document.getElementById('uploadZone');
