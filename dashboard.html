@@ -286,9 +286,18 @@
             const today = new Date();
             const weekAgo = new Date(today);
             weekAgo.setDate(today.getDate() - 7);
+            const maxHistory = new Date(today);
+            maxHistory.setDate(today.getDate() - 365);
             const fmt = d => d.toISOString().split('T')[0];
-            document.getElementById('wbDateTo').value = fmt(today);
-            document.getElementById('wbDateFrom').value = fmt(weekAgo);
+            const dateFromEl = document.getElementById('wbDateFrom');
+            const dateToEl = document.getElementById('wbDateTo');
+            dateToEl.value = fmt(today);
+            dateFromEl.value = fmt(weekAgo);
+            // Limit date pickers: not older than 365 days, not in the future
+            dateFromEl.min = fmt(maxHistory);
+            dateFromEl.max = fmt(today);
+            dateToEl.min = fmt(maxHistory);
+            dateToEl.max = fmt(today);
 
             // Restore saved API key
             const savedKey = localStorage.getItem('wb_api_key');
@@ -317,6 +326,15 @@
 
             if (!apiKey) { alert('Введите WB API ключ'); return; }
             if (!dateFrom || !dateTo) { alert('Укажите период'); return; }
+
+            // Validate: dates must be within last 365 days
+            const now = new Date();
+            const startDate = new Date(dateFrom);
+            const daysDiff = Math.floor((now - startDate) / (1000 * 60 * 60 * 24));
+            if (daysDiff > 365) {
+                alert('Начальная дата не может быть старше 365 дней. WB API ограничивает период.');
+                return;
+            }
 
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner"></span> Загрузка...';

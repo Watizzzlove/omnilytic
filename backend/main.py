@@ -752,11 +752,20 @@ async def fetch_from_wb(request: WBApiFetchRequest):
                 "to": request.date_to
             }
         }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except httpx.HTTPStatusError as e:
         detail = f"Ошибка WB API: {e.response.status_code}"
         try:
             err_body = e.response.json()
-            detail = f"Ошибка WB API: {err_body.get('detail', str(e))}"
+            raw_detail = err_body.get('detail', str(e))
+            if 'excess limit on days' in str(raw_detail):
+                detail = (
+                    "Период слишком длинный. WB API поддерживает "
+                    "максимум 365 дней. Выберите период покороче."
+                )
+            else:
+                detail = f"Ошибка WB API: {raw_detail}"
         except Exception:
             pass
         raise HTTPException(status_code=e.response.status_code, detail=detail)

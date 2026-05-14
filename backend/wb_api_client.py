@@ -14,6 +14,10 @@ RATE_LIMIT_DELAY = 21  # seconds between paginated requests
 PAGE_SIZE = 1000
 
 
+# WB API allows data for the last 365 days maximum
+MAX_HISTORY_DAYS = 365
+
+
 async def fetch_sales_funnel(
     api_key: str,
     date_from: str,
@@ -25,12 +29,27 @@ async def fetch_sales_funnel(
     Fetch all products from WB Sales Funnel API with pagination.
     Returns list of raw API product objects.
     """
+    sel_start = datetime.strptime(date_from, "%Y-%m-%d")
+    sel_end = datetime.strptime(date_to, "%Y-%m-%d")
+    today = datetime.now()
+
+    # Validate: selected period start must be within last 365 days
+    if (today - sel_start).days > MAX_HISTORY_DAYS:
+        raise ValueError(
+            f"Начальная дата не может быть старше {MAX_HISTORY_DAYS} дней. "
+            f"Выберите дату после {(today - timedelta(days=MAX_HISTORY_DAYS)).strftime('%d.%m.%Y')}"
+        )
+
     if not past_from or not past_to:
-        sel_start = datetime.strptime(date_from, "%Y-%m-%d")
-        sel_end = datetime.strptime(date_to, "%Y-%m-%d")
         delta = sel_end - sel_start
         past_end = sel_start - timedelta(days=1)
         past_start = past_end - delta
+
+        # Clamp past period start to not exceed 365-day limit
+        earliest_allowed = today - timedelta(days=MAX_HISTORY_DAYS)
+        if past_start < earliest_allowed:
+            past_start = earliest_allowed
+
         past_from = past_start.strftime("%Y-%m-%d")
         past_to = past_end.strftime("%Y-%m-%d")
 
