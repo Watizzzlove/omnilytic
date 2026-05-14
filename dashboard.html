@@ -190,6 +190,10 @@
                 <div class="wb-api-field" style="flex: 1; min-width: 200px;">
                     <label>API ключ (категория Аналитика)</label>
                     <input type="password" id="wbApiKey" placeholder="Вставьте ваш WB API токен">
+                    <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px;">
+                        <input type="checkbox" id="wbSaveKey" checked style="accent-color: var(--accent-purple);">
+                        <label for="wbSaveKey" style="font-size: 11px; color: var(--text-muted); cursor: pointer;">Запомнить ключ в браузере</label>
+                    </div>
                 </div>
                 <div class="wb-api-field">
                     <label>Период с</label>
@@ -215,7 +219,7 @@
                 <div class="empty-state">
                     <div class="empty-state-icon">📊</div>
                     <div class="empty-state-title">Загрузите данные</div>
-                    <p>Перетащите Excel-файл с отчётом Wildberries</p>
+                    <p>Перетащите Excel-файл или нажмите «WB API» для загрузки из Wildberries</p>
                 </div>
             </div>
         </div>
@@ -240,8 +244,10 @@
     </div>
 
     <script>
-        // Автоопределение API URL (локально или на сервере)
-        const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+        // Автоопределение API URL (локально, file:// или на сервере)
+        const API_BASE = (window.location.protocol === 'file:'
+            || window.location.hostname === 'localhost'
+            || window.location.hostname === '127.0.0.1')
             ? 'http://localhost:8000'
             : window.location.origin;
         let dashboardData = null;
@@ -275,14 +281,20 @@
             });
         });
 
-        // Set default dates for WB API (last 7 days)
-        (function setDefaultDates() {
+        // Set default dates for WB API (last 7 days) + restore saved key
+        (function initWbApi() {
             const today = new Date();
             const weekAgo = new Date(today);
             weekAgo.setDate(today.getDate() - 7);
             const fmt = d => d.toISOString().split('T')[0];
             document.getElementById('wbDateTo').value = fmt(today);
             document.getElementById('wbDateFrom').value = fmt(weekAgo);
+
+            // Restore saved API key
+            const savedKey = localStorage.getItem('wb_api_key');
+            if (savedKey) {
+                document.getElementById('wbApiKey').value = savedKey;
+            }
         })();
 
         // WB API panel toggle
@@ -295,11 +307,13 @@
 
         // Fetch from WB API
         async function fetchFromWbApi() {
-            const apiKey = document.getElementById('wbApiKey').value.trim();
+            const apiKeyEl = document.getElementById('wbApiKey');
+            const apiKey = apiKeyEl.value.trim();
             const dateFrom = document.getElementById('wbDateFrom').value;
             const dateTo = document.getElementById('wbDateTo').value;
             const statusEl = document.getElementById('wbApiStatus');
             const btn = document.getElementById('wbApiFetchBtn');
+            const saveKey = document.getElementById('wbSaveKey').checked;
 
             if (!apiKey) { alert('Введите WB API ключ'); return; }
             if (!dateFrom || !dateTo) { alert('Укажите период'); return; }
@@ -326,6 +340,10 @@
                     statusEl.textContent = `✓ ${data.message}`;
                     document.getElementById('fileInfo').style.display = 'flex';
                     document.getElementById('fileName').textContent = `${data.products_count} товаров (WB API)`;
+                    // Save API key to localStorage if checkbox is checked
+                    if (saveKey) {
+                        localStorage.setItem('wb_api_key', apiKey);
+                    }
                     loadDashboard();
                 } else {
                     statusEl.style.color = 'var(--accent-red)';
@@ -333,7 +351,7 @@
                 }
             } catch (e) {
                 statusEl.style.color = 'var(--accent-red)';
-                statusEl.textContent = 'Ошибка подключения к серверу';
+                statusEl.textContent = `Ошибка подключения к серверу (${API_BASE}). Убедитесь что бэкенд запущен.`;
             } finally {
                 btn.disabled = false;
                 btn.innerHTML = '📊 Загрузить';
