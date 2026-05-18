@@ -11,8 +11,10 @@ import json
 from typing import Optional
 import os
 from datetime import datetime
+import httpx
 from anthropic import Anthropic
 from pydantic import BaseModel
+from wb_api_client import fetch_sales_funnel, map_api_to_internal
 
 app = FastAPI(title="WB Sales Intelligence API", version="1.0.0")
 
@@ -664,6 +666,14 @@ async def get_actions():
     return {"actions": actions}
 
 
+class WBApiFetchRequest(BaseModel):
+    wb_api_key: str
+    date_from: str
+    date_to: str
+    past_from: Optional[str] = None
+    past_to: Optional[str] = None
+
+
 class AIAnalysisRequest(BaseModel):
     api_key: Optional[str] = None
     focus: Optional[str] = "general"  # general, hits, outsiders, matrix, actions
@@ -671,6 +681,101 @@ class AIAnalysisRequest(BaseModel):
 
 # API key from environment variable
 DEFAULT_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+
+@app.post("/api/fetch-from-wb")
+async def fetch_from_wb(request: WBApiFetchRequest):
+    """Загрузка данных из WB API (Sales Funnel)"""
+    try:
+        api_products = await fetch_sales_funnel(
+            api_key=request.wb_api_key,
+            date_from=request.date_from,
+            date_to=request.date_to,
+            past_from=request.past_from,
+            past_to=request.past_to,
+        )
+
+        if not api_products:
+            raise HTTPException(
+                status_code=404,
+                detail="Нет данных за указанный период"
+            )
+
+        mapped = map_api_to_internal(api_products)
+
+        processed = []
+        for record in mapped:
+            record['impressions_dynamics'] = calculate_dynamics(
+                record.get('card_views', 0),
+                record.get('card_views_prev', 0)
+            )
+            record['orders_dynamics_pct'] = calculate_dynamics(
+                record.get('orders_qty', 0),
+                record.get('orders_qty_prev', 0)
+            )
+            record['revenue_dynamics_pct'] = calculate_dynamics(
+                record.get('orders_value', 0),
+                record.get('orders_value_prev', 0)
+            )
+            record['bcg_category'] = classify_product(record)
+            record['total_stock'] = (
+                safe_int(record.get('stock_wb', 0))
+                + safe_int(record.get('stock_mp', 0))
+            )
+            if (record['total_stock'] == 0
+                    and safe_int(record.get('orders_qty_prev', 0)) > 0):
+                record['lost_revenue'] = safe_int(
+                    record.get('orders_value_prev', 0)
+                )
+            else:
+                record['lost_revenue'] = 0
+            processed.append(record)
+
+        DATA_STORE["raw_data"] = mapped
+        DATA_STORE["processed_data"] = processed
+        DATA_STORE["upload_date"] = datetime.now().isoformat()
+        DATA_STORE["filename"] = (
+            f"WB API: {request.date_from} — {request.date_to}"
+        )
+        DATA_STORE["period"] = {
+            "from": request.date_from,
+            "to": request.date_to
+        }
+
+        return {
+            "success": True,
+            "message": f"Загружено {len(processed)} товаров из WB API",
+            "products_count": len(processed),
+            "source": "wb_api",
+            "period": {
+                "from": request.date_from,
+                "to": request.date_to
+            }
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except httpx.HTTPStatusError as e:
+        detail = f"Ошибка WB API: {e.response.status_code}"
+        try:
+            err_body = e.response.json()
+            raw_detail = err_body.get('detail', str(e))
+            if 'excess limit on days' in str(raw_detail):
+                detail = (
+                    "Период слишком длинный. WB API поддерживает "
+                    "максимум 365 дней. Выберите период покороче."
+                )
+            else:
+                detail = f"Ошибка WB API: {raw_detail}"
+        except Exception:
+            pass
+        raise HTTPException(status_code=e.response.status_code, detail=detail)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка загрузки из WB API: {str(e)}"
+        )
 
 
 @app.post("/api/ai/analyze")
