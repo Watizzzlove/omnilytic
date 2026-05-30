@@ -1,0 +1,19 @@
+---
+description:
+globs:
+alwaysApply: true
+---
+# Roadmap Rules
+
+- Do not create or maintain separate `docs/roadmap.md` or `docs/specs/**` files unless the user explicitly asks for them.
+- Use a roadmap only for large tasks where the user asks for spec-style work or asks to split work into stages.
+- If a roadmap is needed, keep it short and place it in `rules/` or in the chat, not in `docs/`.
+- Prefer Git commits as the source of change history instead of long descriptive markdown files.
+- For normal coding tasks, implement the requested change, verify it, and summarize only the important result in chat.
+- Do not create docs/specs and long markdown reports without explicit request.
+- The history of changes is recorded by Git commits.
+- Frontend: vanilla HTML/CSS/JS.
+- Backend: FastAPI.
+- UI language: Russian.
+- Save existing API routes unless the user explicitly requests to change the contract.
+- For design, focus on .skills/DESIGN.md.

@@ -1,5 +1,5 @@
 """
-WB Sales Intelligence Dashboard - Backend API
+Omnilytic - Backend API
 """
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,12 +14,18 @@ from datetime import datetime
 import httpx
 from anthropic import Anthropic
 from pydantic import BaseModel
-from wb_api_client import fetch_sales_funnel, map_api_to_internal
+from wb_api_client import (
+    fetch_sales_funnel,
+    fetch_search_report_overview,
+    map_api_to_internal,
+    resolve_periods,
+)
 
-app = FastAPI(title="WB Sales Intelligence API", version="1.0.0")
+app = FastAPI(title="Omnilytic API", version="1.0.0")
 
 # Путь к корню проекта
 BASE_DIR = Path(__file__).resolve().parent.parent
+STATIC_DIR = BASE_DIR / "static"
 
 # CORS для работы с фронтендом
 app.add_middleware(
@@ -30,12 +36,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
 # Глобальное хранилище данных (в production использовать БД)
 DATA_STORE = {
     "raw_data": None,
     "processed_data": None,
     "upload_date": None,
-    "period": None
+    "period": None,
+    "filename": None,
+    "source": None,
+    "search_report_metrics": None,
+    "metrics_availability": None,
+    "metrics_origin": None,
 }
 
 # Маппинг колонок
@@ -120,6 +134,118 @@ def calculate_dynamics(current, previous):
     return round(((current - previous) / previous) * 100, 1)
 
 
+def relative_dynamics_or_none(current, previous):
+    if previous == 0:
+        return None
+    return round(((current - previous) / previous) * 100, 1)
+
+
+def percent_point_change(current, previous):
+    return round(current - previous, 1)
+
+
+def build_absolute_metric(value, prev, available=True, reason=None, origin=None):
+    metric = {
+        "value": value if available else None,
+        "prev": prev if available else None,
+        "dynamics": relative_dynamics_or_none(value, prev) if available else None,
+        "diff": (value - prev) if available else None,
+        "available": available,
+        "reason": reason,
+    }
+    if origin:
+        metric["origin"] = origin
+    return metric
+
+
+def build_percentage_metric(value, prev, available=True, reason=None, origin=None):
+    metric = {
+        "value": value if available else None,
+        "prev": prev if available else None,
+        "dynamics": percent_point_change(value, prev) if available else None,
+        "available": available,
+        "reason": reason,
+    }
+    if origin:
+        metric["origin"] = origin
+    return metric
+
+
+def build_metrics_meta_for_excel():
+    availability = {
+        "impressions": {"available": True, "reason": None},
+        "ctr": {"available": True, "reason": None},
+        "cart_conversion": {"available": True, "reason": None},
+        "order_conversion": {"available": True, "reason": None},
+        "purchase_rate": {"available": True, "reason": None},
+        "cancel_rate": {"available": True, "reason": None},
+    }
+    origin = {
+        "impressions": "excel",
+        "ctr": "excel",
+        "card_views": "excel",
+        "cart_conversion": "excel",
+        "order_conversion": "excel",
+        "purchase_rate": "excel",
+        "cancel_rate": "excel",
+        "revenue": "excel",
+        "orders": "excel",
+        "purchased_value": "excel",
+        "cancelled_value": "excel",
+        "avg_order_value": "excel",
+    }
+    return availability, origin
+
+
+def format_search_report_error(exc):
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status in (401, 403):
+            return "Search Report API недоступен для этого токена или тарифа Jam."
+        if status == 429:
+            return "Search Report API временно ограничил запросы. Попробуйте позже."
+        try:
+            body = exc.response.json()
+            detail = body.get("detail") or body.get("message")
+            if detail:
+                return f"Search Report API: {detail}"
+        except Exception:
+            pass
+        return f"Search Report API вернул ошибку {status}."
+    return f"Search Report API недоступен: {str(exc)}"
+
+
+def build_metrics_meta_for_wb(search_report_metrics=None, search_report_reason=None):
+    search_available = bool(search_report_metrics)
+    fallback_reason = None if search_available else (
+        search_report_reason
+        or "Показы и CTR требуют Search Report API (тариф Jam). Отображаются данные из Sales Funnel."
+    )
+    availability = {
+        "impressions": {"available": True, "reason": fallback_reason},
+        "ctr": {"available": True, "reason": fallback_reason},
+        "cart_conversion": {"available": True, "reason": None},
+        "order_conversion": {"available": True, "reason": None},
+        "purchase_rate": {"available": True, "reason": None},
+        "cancel_rate": {"available": True, "reason": None},
+    }
+    origin = {
+        "impressions": "search_report" if search_available else "sales_funnel",
+        "ctr": "search_report" if search_available else "sales_funnel",
+        "card_views": "sales_funnel",
+        "cart_conversion": "sales_funnel",
+        "order_conversion": "sales_funnel",
+        "purchase_rate": "sales_funnel",
+        "cancel_rate": "sales_funnel",
+        "revenue": "sales_funnel",
+        "orders": "sales_funnel",
+        "purchased_value": "sales_funnel",
+        "cancelled_value": "sales_funnel",
+        "avg_order_value": "sales_funnel",
+    }
+    return availability, origin
+
+
 def classify_product(row):
     """Классификация товара по матрице BCG"""
     orders_dynamics = calculate_dynamics(
@@ -199,6 +325,13 @@ async def upload_file(file: UploadFile = File(...)):
         DATA_STORE["processed_data"] = processed
         DATA_STORE["upload_date"] = datetime.now().isoformat()
         DATA_STORE["filename"] = file.filename
+        DATA_STORE["period"] = None
+        DATA_STORE["source"] = "excel"
+        DATA_STORE["search_report_metrics"] = None
+        (
+            DATA_STORE["metrics_availability"],
+            DATA_STORE["metrics_origin"],
+        ) = build_metrics_meta_for_excel()
 
         return {
             "success": True,
@@ -210,13 +343,27 @@ async def upload_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Ошибка обработки файла: {str(e)}")
 
 
+def filter_products(data, product_ids_str):
+    if not product_ids_str:
+        return data
+    ids = [x.strip() for x in product_ids_str.split(",") if x.strip()]
+    if not ids:
+        return data
+    return [r for r in data if str(r.get('seller_article', '')) in ids or str(r.get('wb_article', '')) in ids]
+
+
 @app.get("/api/dashboard/summary")
-async def get_dashboard_summary():
+async def get_dashboard_summary(product_ids: Optional[str] = None):
     """Получение сводных KPI для дашборда с средневзвешенными показателями"""
     if DATA_STORE["processed_data"] is None:
         raise HTTPException(status_code=404, detail="Данные не загружены")
 
-    data = DATA_STORE["processed_data"]
+    data = filter_products(DATA_STORE["processed_data"], product_ids)
+
+    source = DATA_STORE.get("source") or "excel"
+    metrics_availability = DATA_STORE.get("metrics_availability") or {}
+    metrics_origin = DATA_STORE.get("metrics_origin") or {}
+    search_report_metrics = DATA_STORE.get("search_report_metrics") or {}
 
     # ===== ФИЛЬТРУЕМ ТОВАРЫ С ЗАКАЗАМИ (для расчета показателей) =====
     # Товары с заказами в текущем периоде
@@ -248,16 +395,45 @@ async def get_dashboard_summary():
     total_cancelled_value_prev = sum(safe_int(r.get('cancelled_value_prev', 0)) for r in data_with_orders_prev)
 
     # Воронка - текущий период (только по товарам с заказами)
-    total_impressions = sum(safe_int(r.get('impressions', 0)) for r in data_with_orders)
     total_card_views = sum(safe_int(r.get('card_views', 0)) for r in data_with_orders)
     total_add_to_cart = sum(safe_int(r.get('add_to_cart', 0)) for r in data_with_orders)
     total_favorites = sum(safe_int(r.get('add_to_favorites', 0)) for r in data_with_orders)
 
     # Воронка - предыдущий период (только по товарам с заказами в пред. периоде)
-    total_impressions_prev = sum(safe_int(r.get('impressions_prev', 0)) for r in data_with_orders_prev)
     total_card_views_prev = sum(safe_int(r.get('card_views_prev', 0)) for r in data_with_orders_prev)
     total_add_to_cart_prev = sum(safe_int(r.get('add_to_cart_prev', 0)) for r in data_with_orders_prev)
     total_favorites_prev = sum(safe_int(r.get('add_to_favorites_prev', 0)) for r in data_with_orders_prev)
+
+    impressions_meta = metrics_availability.get("impressions", {})
+    ctr_meta = metrics_availability.get("ctr", {})
+
+    if source == "wb_api" and search_report_metrics:
+        total_impressions = safe_int(
+            search_report_metrics.get("current", {}).get("visibility", 0)
+        )
+        total_impressions_prev = safe_int(
+            search_report_metrics.get("previous", {}).get("visibility", 0)
+        )
+        ctr_open_card = safe_int(
+            search_report_metrics.get("current", {}).get("open_card", 0)
+        )
+        ctr_open_card_prev = safe_int(
+            search_report_metrics.get("previous", {}).get("open_card", 0)
+        )
+    elif source == "wb_api":
+        total_impressions = total_card_views
+        total_impressions_prev = total_card_views_prev
+        ctr_open_card = 0
+        ctr_open_card_prev = 0
+    else:
+        total_impressions = sum(
+            safe_int(r.get('impressions', 0)) for r in data_with_orders
+        )
+        total_impressions_prev = sum(
+            safe_int(r.get('impressions_prev', 0)) for r in data_with_orders_prev
+        )
+        ctr_open_card = total_card_views
+        ctr_open_card_prev = total_card_views_prev
 
     # Остатки - ПО ВСЕМ ТОВАРАМ (не фильтруем)
     total_stock_value = sum(safe_int(r.get('stock_value', 0)) for r in data)
@@ -269,8 +445,8 @@ async def get_dashboard_summary():
 
     # ===== СРЕДНЕВЗВЕШЕННЫЕ ПОКАЗАТЕЛИ =====
     # CTR = (переходы / показы) * 100 — средневзвешенный по показам
-    avg_ctr = round((total_card_views / total_impressions * 100), 2) if total_impressions > 0 else 0
-    avg_ctr_prev = round((total_card_views_prev / total_impressions_prev * 100), 2) if total_impressions_prev > 0 else 0
+    avg_ctr = round((ctr_open_card / total_impressions * 100), 2) if total_impressions > 0 else 0
+    avg_ctr_prev = round((ctr_open_card_prev / total_impressions_prev * 100), 2) if total_impressions_prev > 0 else 0
 
     # Конверсия в корзину = (корзина / переходы) * 100
     cart_conversion = round((total_add_to_cart / total_card_views * 100), 2) if total_card_views > 0 else 0
@@ -304,149 +480,139 @@ async def get_dashboard_summary():
 
     # ===== ВОРОНКА С ДИНАМИКОЙ =====
     funnel = {
-        "impressions": {
-            "value": total_impressions,
-            "prev": total_impressions_prev,
-            "dynamics": calculate_dynamics(total_impressions, total_impressions_prev)
-        },
-        "card_views": {
-            "value": total_card_views,
-            "prev": total_card_views_prev,
-            "dynamics": calculate_dynamics(total_card_views, total_card_views_prev)
-        },
-        "add_to_cart": {
-            "value": total_add_to_cart,
-            "prev": total_add_to_cart_prev,
-            "dynamics": calculate_dynamics(total_add_to_cart, total_add_to_cart_prev)
-        },
-        "favorites": {
-            "value": total_favorites,
-            "prev": total_favorites_prev,
-            "dynamics": calculate_dynamics(total_favorites, total_favorites_prev)
-        },
-        "orders": {
-            "value": total_orders_qty,
-            "prev": total_orders_qty_prev,
-            "dynamics": calculate_dynamics(total_orders_qty, total_orders_qty_prev)
-        },
-        "purchased": {
-            "value": total_purchased_qty,
-            "prev": total_purchased_qty_prev,
-            "dynamics": calculate_dynamics(total_purchased_qty, total_purchased_qty_prev)
-        },
-        "cancelled": {
-            "value": total_cancelled_qty,
-            "prev": total_cancelled_qty_prev,
-            "dynamics": calculate_dynamics(total_cancelled_qty, total_cancelled_qty_prev)
-        },
+        "impressions": build_absolute_metric(
+            total_impressions,
+            total_impressions_prev,
+            available=impressions_meta.get("available", True),
+            reason=impressions_meta.get("reason"),
+            origin=metrics_origin.get("impressions"),
+        ),
+        "card_views": build_absolute_metric(
+            total_card_views,
+            total_card_views_prev,
+            origin=metrics_origin.get("card_views"),
+        ),
+        "add_to_cart": build_absolute_metric(
+            total_add_to_cart,
+            total_add_to_cart_prev,
+            origin=metrics_origin.get("cart_conversion"),
+        ),
+        "favorites": build_absolute_metric(
+            total_favorites,
+            total_favorites_prev,
+        ),
+        "orders": build_absolute_metric(
+            total_orders_qty,
+            total_orders_qty_prev,
+            origin=metrics_origin.get("orders"),
+        ),
+        "purchased": build_absolute_metric(
+            total_purchased_qty,
+            total_purchased_qty_prev,
+        ),
+        "cancelled": build_absolute_metric(
+            total_cancelled_qty,
+            total_cancelled_qty_prev,
+        ),
         # Конверсии с динамикой
         "conversions": {
-            "ctr": {
-                "value": avg_ctr,
-                "prev": avg_ctr_prev,
-                "dynamics": round(avg_ctr - avg_ctr_prev, 2)
-            },
-            "cart_rate": {
-                "value": cart_conversion,
-                "prev": cart_conversion_prev,
-                "dynamics": round(cart_conversion - cart_conversion_prev, 2)
-            },
-            "order_rate": {
-                "value": order_conversion,
-                "prev": order_conversion_prev,
-                "dynamics": round(order_conversion - order_conversion_prev, 2)
-            },
-            "purchase_rate": {
-                "value": purchase_rate,
-                "prev": purchase_rate_prev,
-                "dynamics": round(purchase_rate - purchase_rate_prev, 1)
-            },
-            "cancel_rate": {
-                "value": cancel_rate,
-                "prev": cancel_rate_prev,
-                "dynamics": round(cancel_rate - cancel_rate_prev, 1)
-            }
+            "ctr": build_percentage_metric(
+                avg_ctr,
+                avg_ctr_prev,
+                available=ctr_meta.get("available", True),
+                reason=ctr_meta.get("reason"),
+                origin=metrics_origin.get("ctr"),
+            ),
+            "cart_rate": build_percentage_metric(
+                cart_conversion,
+                cart_conversion_prev,
+                origin=metrics_origin.get("cart_conversion"),
+            ),
+            "order_rate": build_percentage_metric(
+                order_conversion,
+                order_conversion_prev,
+                origin=metrics_origin.get("order_conversion"),
+            ),
+            "purchase_rate": build_percentage_metric(
+                purchase_rate,
+                purchase_rate_prev,
+                origin=metrics_origin.get("purchase_rate"),
+            ),
+            "cancel_rate": build_percentage_metric(
+                cancel_rate,
+                cancel_rate_prev,
+                origin=metrics_origin.get("cancel_rate"),
+            )
         }
     }
 
     return {
+        "source": source,
+        "metrics_availability": metrics_availability,
+        "metrics_origin": metrics_origin,
         "kpi": {
-            "revenue": {
-                "value": total_orders_value,
-                "prev": total_orders_value_prev,
-                "dynamics": calculate_dynamics(total_orders_value, total_orders_value_prev),
-                "diff": total_orders_value - total_orders_value_prev
-            },
-            "orders": {
-                "value": total_orders_qty,
-                "prev": total_orders_qty_prev,
-                "dynamics": calculate_dynamics(total_orders_qty, total_orders_qty_prev),
-                "diff": total_orders_qty - total_orders_qty_prev
-            },
-            "purchased_value": {
-                "value": total_purchased_value,
-                "prev": total_purchased_value_prev,
-                "dynamics": calculate_dynamics(total_purchased_value, total_purchased_value_prev),
-                "diff": total_purchased_value - total_purchased_value_prev
-            },
-            "purchased_qty": {
-                "value": total_purchased_qty,
-                "prev": total_purchased_qty_prev,
-                "dynamics": calculate_dynamics(total_purchased_qty, total_purchased_qty_prev),
-                "diff": total_purchased_qty - total_purchased_qty_prev
-            },
-            "purchase_rate": {
-                "value": purchase_rate,
-                "prev": purchase_rate_prev,
-                "dynamics": round(purchase_rate - purchase_rate_prev, 1)
-            },
-            "cancel_rate": {
-                "value": cancel_rate,
-                "prev": cancel_rate_prev,
-                "dynamics": round(cancel_rate - cancel_rate_prev, 1)
-            },
-            "cancelled_value": {
-                "value": total_cancelled_value,
-                "prev": total_cancelled_value_prev,
-                "dynamics": calculate_dynamics(total_cancelled_value, total_cancelled_value_prev),
-                "diff": total_cancelled_value - total_cancelled_value_prev
-            },
-            "avg_order_value": {
-                "value": avg_order_value,
-                "prev": avg_order_value_prev,
-                "dynamics": calculate_dynamics(avg_order_value, avg_order_value_prev),
-                "diff": avg_order_value - avg_order_value_prev
-            },
-            "avg_price": {
-                "value": avg_price_weighted,
-                "prev": avg_price_weighted_prev,
-                "dynamics": calculate_dynamics(avg_price_weighted, avg_price_weighted_prev),
-                "diff": avg_price_weighted - avg_price_weighted_prev
-            },
-            "ctr": {
-                "value": avg_ctr,
-                "prev": avg_ctr_prev,
-                "dynamics": round(avg_ctr - avg_ctr_prev, 2)
-            },
-            "cart_conversion": {
-                "value": cart_conversion,
-                "prev": cart_conversion_prev,
-                "dynamics": round(cart_conversion - cart_conversion_prev, 2)
-            },
-            "order_conversion": {
-                "value": order_conversion,
-                "prev": order_conversion_prev,
-                "dynamics": round(order_conversion - order_conversion_prev, 2)
-            },
+            "revenue": build_absolute_metric(
+                total_orders_value,
+                total_orders_value_prev,
+                origin=metrics_origin.get("revenue"),
+            ),
+            "orders": build_absolute_metric(
+                total_orders_qty,
+                total_orders_qty_prev,
+                origin=metrics_origin.get("orders"),
+            ),
+            "purchased_value": build_absolute_metric(
+                total_purchased_value,
+                total_purchased_value_prev,
+                origin=metrics_origin.get("purchased_value"),
+            ),
+            "purchased_qty": build_absolute_metric(
+                total_purchased_qty,
+                total_purchased_qty_prev,
+            ),
+            "purchase_rate": build_percentage_metric(
+                purchase_rate,
+                purchase_rate_prev,
+                origin=metrics_origin.get("purchase_rate"),
+            ),
+            "cancel_rate": build_percentage_metric(
+                cancel_rate,
+                cancel_rate_prev,
+                origin=metrics_origin.get("cancel_rate"),
+            ),
+            "cancelled_value": build_absolute_metric(
+                total_cancelled_value,
+                total_cancelled_value_prev,
+                origin=metrics_origin.get("cancelled_value"),
+            ),
+            "avg_order_value": build_absolute_metric(
+                avg_order_value,
+                avg_order_value_prev,
+                origin=metrics_origin.get("avg_order_value"),
+            ),
+            "avg_price": build_absolute_metric(
+                avg_price_weighted,
+                avg_price_weighted_prev,
+            ),
+            "card_views": build_absolute_metric(
+                total_card_views,
+                total_card_views_prev,
+                origin=metrics_origin.get("card_views"),
+            ),
+            "cart_conversion": build_percentage_metric(
+                cart_conversion,
+                cart_conversion_prev,
+                origin=metrics_origin.get("cart_conversion"),
+            ),
+            "order_conversion": build_percentage_metric(
+                order_conversion,
+                order_conversion_prev,
+                origin=metrics_origin.get("order_conversion"),
+            ),
             "stock": {
                 "value": total_stock_value,
                 "qty": total_stock_qty
             },
-            "impressions": {
-                "value": total_impressions,
-                "prev": total_impressions_prev,
-                "dynamics": calculate_dynamics(total_impressions, total_impressions_prev)
-            }
         },
         "funnel": funnel,
         "products_count": len(data),
@@ -457,12 +623,12 @@ async def get_dashboard_summary():
 
 
 @app.get("/api/dashboard/hits")
-async def get_hits(limit: int = 10):
+async def get_hits(limit: int = 10, product_ids: Optional[str] = None):
     """Топ товаров по выручке (хиты)"""
     if DATA_STORE["processed_data"] is None:
         raise HTTPException(status_code=404, detail="Данные не загружены")
 
-    data = DATA_STORE["processed_data"]
+    data = filter_products(DATA_STORE["processed_data"], product_ids)
 
     # Сортируем по выручке
     sorted_data = sorted(data, key=lambda x: safe_int(x.get('orders_value', 0)), reverse=True)
@@ -485,18 +651,22 @@ async def get_hits(limit: int = 10):
 
 
 @app.get("/api/dashboard/outsiders")
-async def get_outsiders(limit: int = 10):
+async def get_outsiders(limit: int = 10, product_ids: Optional[str] = None):
     """Аутсайдеры - товары с проблемами"""
     if DATA_STORE["processed_data"] is None:
         raise HTTPException(status_code=404, detail="Данные не загружены")
 
-    data = DATA_STORE["processed_data"]
+    data = filter_products(DATA_STORE["processed_data"], product_ids)
+    source = DATA_STORE.get("source") or "excel"
 
     outsiders = []
+    traffic_field = "card_views" if source == "wb_api" else "impressions"
+    traffic_label = "переходов" if traffic_field == "card_views" else "показов"
 
     # Товары с нулевыми заказами но были показы
-    zero_orders = [r for r in data if safe_int(r.get('orders_qty', 0)) == 0 and safe_int(r.get('impressions', 0)) > 1000]
-    for item in sorted(zero_orders, key=lambda x: safe_int(x.get('impressions', 0)), reverse=True)[:limit//3]:
+    zero_orders = [r for r in data if safe_int(r.get('orders_qty', 0)) == 0 and safe_int(r.get(traffic_field, 0)) > 1000]
+    for item in sorted(zero_orders, key=lambda x: safe_int(x.get(traffic_field, 0)), reverse=True)[:limit//3]:
+        traffic_value = safe_int(item.get(traffic_field, 0))
         outsiders.append({
             "seller_article": item.get('seller_article'),
             "wb_article": item.get('wb_article'),
@@ -506,9 +676,15 @@ async def get_outsiders(limit: int = 10):
             "category": item.get('category'),
             "recommendation": "Проверить цену и контент карточки"
         })
+        outsiders[-1]["issue"] = "Нет заказов"
+        outsiders[-1]["detail"] = (
+            f"{traffic_value:,} "
+            f"{'переходов в карточку' if traffic_field == 'card_views' else 'показов'}"
+        )
+        outsiders[-1]["recommendation"] = "Проверьте цену, описание и содержание карточки"
 
     # Низкий CTR
-    low_ctr = [r for r in data if safe_float(r.get('ctr', 0)) < 1 and safe_int(r.get('impressions', 0)) > 5000]
+    low_ctr = [] if source == "wb_api" else [r for r in data if safe_float(r.get('ctr', 0)) < 1 and safe_int(r.get('impressions', 0)) > 5000]
     for item in sorted(low_ctr, key=lambda x: safe_int(x.get('impressions', 0)), reverse=True)[:limit//3]:
         outsiders.append({
             "seller_article": item.get('seller_article'),
@@ -519,6 +695,8 @@ async def get_outsiders(limit: int = 10):
             "category": item.get('category'),
             "recommendation": "Улучшить главное фото"
         })
+        outsiders[-1]["issue"] = "Низкий CTR"
+        outsiders[-1]["recommendation"] = "Улучшите главное фото и первые элементы карточки"
 
     # Низкий процент выкупа
     low_purchase = [r for r in data if safe_int(r.get('purchase_rate', 0)) < 30 and safe_int(r.get('orders_qty', 0)) > 10]
@@ -532,17 +710,20 @@ async def get_outsiders(limit: int = 10):
             "category": item.get('category'),
             "recommendation": "Проверить качество/описание"
         })
+        outsiders[-1]["issue"] = "Низкий выкуп"
+        outsiders[-1]["detail"] = f"Выкуп {safe_int(item.get('purchase_rate', 0))}%"
+        outsiders[-1]["recommendation"] = "Проверьте качество товара, упаковку и описание ожиданий"
 
     return {"outsiders": outsiders[:limit]}
 
 
 @app.get("/api/dashboard/matrix")
-async def get_bcg_matrix():
+async def get_bcg_matrix(product_ids: Optional[str] = None):
     """BCG-матрица товаров"""
     if DATA_STORE["processed_data"] is None:
         raise HTTPException(status_code=404, detail="Данные не загружены")
 
-    data = DATA_STORE["processed_data"]
+    data = filter_products(DATA_STORE["processed_data"], product_ids)
 
     matrix = {
         "star": {"count": 0, "revenue": 0, "items": []},
@@ -573,16 +754,24 @@ async def get_bcg_matrix():
     for cat in matrix:
         matrix[cat]["items"] = sorted(matrix[cat]["items"], key=lambda x: x['orders_value'], reverse=True)
 
-    return {"matrix": matrix}
+    return {
+        "matrix": matrix,
+        "rules": {
+            "growth_threshold_pct": 10,
+            "revenue_threshold": 10000,
+        },
+    }
 
 
 @app.get("/api/dashboard/actions")
-async def get_actions():
+async def get_actions(product_ids: Optional[str] = None):
     """Рекомендуемые действия"""
     if DATA_STORE["processed_data"] is None:
         raise HTTPException(status_code=404, detail="Данные не загружены")
 
-    data = DATA_STORE["processed_data"]
+    data = filter_products(DATA_STORE["processed_data"], product_ids)
+    source = DATA_STORE.get("source") or "excel"
+    traffic_field = "card_views" if source == "wb_api" else "impressions"
 
     actions = {
         "critical": [],
@@ -624,7 +813,7 @@ async def get_actions():
         })
 
     # ВАЖНО: Низкий рейтинг карточки
-    low_rating = [r for r in data if safe_float(r.get('card_rating', 10)) < 5 and safe_int(r.get('impressions', 0)) > 1000]
+    low_rating = [r for r in data if safe_float(r.get('card_rating', 10)) < 5 and safe_int(r.get(traffic_field, 0)) > 1000]
     if low_rating:
         actions["important"].append({
             "title": f"Улучшить {len(low_rating)} карточек с низким рейтингом",
@@ -634,7 +823,7 @@ async def get_actions():
         })
 
     # ВАЖНО: Высокий CTR, но низкая конверсия
-    high_ctr_low_conv = [r for r in data if safe_float(r.get('ctr', 0)) > 5 and safe_float(r.get('order_conversion', 0)) < 2]
+    high_ctr_low_conv = [] if source == "wb_api" else [r for r in data if safe_float(r.get('ctr', 0)) > 5 and safe_float(r.get('order_conversion', 0)) < 2]
     if high_ctr_low_conv:
         actions["important"].append({
             "title": f"Оптимизировать цену для {len(high_ctr_low_conv)} товаров",
@@ -687,12 +876,19 @@ DEFAULT_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 async def fetch_from_wb(request: WBApiFetchRequest):
     """Загрузка данных из WB API (Sales Funnel)"""
     try:
+        periods = resolve_periods(
+            request.date_from,
+            request.date_to,
+            request.past_from,
+            request.past_to,
+        )
+
         api_products = await fetch_sales_funnel(
             api_key=request.wb_api_key,
-            date_from=request.date_from,
-            date_to=request.date_to,
-            past_from=request.past_from,
-            past_to=request.past_to,
+            date_from=periods["current_from"],
+            date_to=periods["current_to"],
+            past_from=periods["past_from"],
+            past_to=periods["past_to"],
         )
 
         if not api_products:
@@ -702,13 +898,30 @@ async def fetch_from_wb(request: WBApiFetchRequest):
             )
 
         mapped = map_api_to_internal(api_products)
+        search_report_metrics = None
+        search_report_reason = None
+
+        try:
+            current_search = await fetch_search_report_overview(
+                api_key=request.wb_api_key,
+                date_from=periods["current_from"],
+                date_to=periods["current_to"],
+                past_from=periods["past_from"],
+                past_to=periods["past_to"],
+            )
+            search_report_metrics = {
+                "current": current_search,
+                "previous": {
+                    "visibility": current_search.get("visibility_prev", 0),
+                    "open_card": current_search.get("open_card_prev", 0),
+                },
+            }
+        except Exception as exc:
+            search_report_reason = format_search_report_error(exc)
 
         processed = []
         for record in mapped:
-            record['impressions_dynamics'] = calculate_dynamics(
-                record.get('card_views', 0),
-                record.get('card_views_prev', 0)
-            )
+            record['impressions_dynamics'] = None
             record['orders_dynamics_pct'] = calculate_dynamics(
                 record.get('orders_qty', 0),
                 record.get('orders_qty_prev', 0)
@@ -734,12 +947,20 @@ async def fetch_from_wb(request: WBApiFetchRequest):
         DATA_STORE["raw_data"] = mapped
         DATA_STORE["processed_data"] = processed
         DATA_STORE["upload_date"] = datetime.now().isoformat()
+        DATA_STORE["source"] = "wb_api"
+        DATA_STORE["search_report_metrics"] = search_report_metrics
+        (
+            DATA_STORE["metrics_availability"],
+            DATA_STORE["metrics_origin"],
+        ) = build_metrics_meta_for_wb(search_report_metrics, search_report_reason)
         DATA_STORE["filename"] = (
             f"WB API: {request.date_from} — {request.date_to}"
         )
         DATA_STORE["period"] = {
-            "from": request.date_from,
-            "to": request.date_to
+            "from": periods["current_from"],
+            "to": periods["current_to"],
+            "prev_from": periods["past_from"],
+            "prev_to": periods["past_to"]
         }
 
         return {
@@ -748,9 +969,11 @@ async def fetch_from_wb(request: WBApiFetchRequest):
             "products_count": len(processed),
             "source": "wb_api",
             "period": {
-                "from": request.date_from,
-                "to": request.date_to
-            }
+                "from": periods["current_from"],
+                "to": periods["current_to"]
+            },
+            "search_report_available": bool(search_report_metrics),
+            "search_report_reason": search_report_reason
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -824,7 +1047,7 @@ async def ai_analyze(request: AIAnalysisRequest):
         top_10 = sorted(data, key=lambda x: safe_int(x.get('orders_value', 0)), reverse=True)[:10]
         summary["top_10"] = [{"name": r.get('name', '')[:50], "revenue": safe_int(r.get('orders_value', 0)), "dynamics": r.get('revenue_dynamics_pct', 0)} for r in top_10]
 
-        prompt = f"""Ты - эксперт по аналитике продаж на Wildberries. Проанализируй данные за неделю и дай конкретные рекомендации для роста продаж.
+        prompt = f"""Ты - эксперт по аналитике продаж на маркетплейсах. Проанализируй данные за неделю и дай конкретные рекомендации для роста продаж.
 
 ДАННЫЕ:
 {json.dumps(summary, ensure_ascii=False, indent=2)}
