@@ -344,6 +344,8 @@
             return;
         }
 
+        console.log("[UE] resolve", { sectionId, productId, from: dates.from, to: dates.to });
+
         try {
             const response = await fetch(`${app.API_BASE}/api/unit-economics`, {
                 method: "POST",

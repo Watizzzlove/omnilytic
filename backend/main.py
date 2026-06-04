@@ -310,6 +310,57 @@ def find_product_record(product_id: str):
     return None
 
 
+def resolve_wb_product_id(product_id: str):
+    """
+    Map a product_id coming from the UI (which may be the seller's internal
+    SKU / 'Артикул продавца' from Excel) to a real WB nmId that the
+    /sales-reports/detailed endpoint can match on.
+
+    Returns: dict { "input", "wb_id", "source", "seller_article", "wb_article",
+                     "name", "matched" }
+    """
+    product_id = str(product_id or "").strip()
+    info = {
+        "input": product_id,
+        "wb_id": product_id,
+        "source": "as_is",
+        "seller_article": "",
+        "wb_article": "",
+        "name": "",
+        "matched": False,
+    }
+    if not product_id:
+        return info
+
+    record = find_product_record(product_id)
+    if record is None:
+        log.info("UE resolve: %r not found in DATA_STORE", product_id)
+        return info
+
+    def _normalize(value):
+        text = str(value or "").strip()
+        if text.lower() in ("nan", "none", "null"):
+            return ""
+        return text
+
+    seller_article = _normalize(record.get("seller_article"))
+    wb_article = _normalize(record.get("wb_article"))
+    name = _normalize(record.get("name"))
+
+    info["seller_article"] = seller_article
+    info["wb_article"] = wb_article
+    info["name"] = name
+    info["matched"] = True
+
+    if wb_article:
+        info["wb_id"] = wb_article
+        info["source"] = "wb_article"
+    elif seller_article:
+        info["wb_id"] = seller_article
+        info["source"] = "seller_article"
+    return info
+
+
 def get_filter_products():
     products = []
     seen = set()
@@ -475,6 +526,14 @@ async def get_unit_economics_payload(api_key: str, date_from: str, date_to: str,
     if cached is not None:
         return cached
 
+    resolution = resolve_wb_product_id(product_id)
+    wb_product_id = resolution["wb_id"]
+    log.info(
+        "UE resolve: input=%r -> wb_id=%r (source=%s, seller=%r, wb=%r)",
+        product_id, wb_product_id, resolution["source"],
+        resolution["seller_article"], resolution["wb_article"],
+    )
+
     fields = [
         "rrdId",
         "nmId",
@@ -502,26 +561,35 @@ async def get_unit_economics_payload(api_key: str, date_from: str, date_to: str,
         period="daily",
         fields=fields,
     )
-    matched_rows = [row for row in rows if match_report_row_to_product(row, product_id)]
+    matched_rows = [row for row in rows if match_report_row_to_product(row, wb_product_id)]
     if not matched_rows:
         log.warning(
-            "UE: no financial data for product_id=%r dates=%s..%s (rows received: %d)",
-            product_id, date_from, date_to, len(rows),
+            "UE: no financial data for product_id=%r (wb_id=%r) dates=%s..%s (rows received: %d)",
+            product_id, wb_product_id, date_from, date_to, len(rows),
         )
-        source_hint = ""
-        if DATA_STORE.get("source") == "excel":
-            source_hint = (
-                " Загружены Excel-данные — командный центр считается по локальному файлу, "
-                "а юнит-экономика всегда запрашивает WB API напрямую. "
-                "Артикулы из Excel могут не совпадать с реальными vendorCode в WB."
+        hint_parts = []
+        if resolution["matched"] and resolution["source"] == "as_is":
+            hint_parts.append(
+                f"В локальных данных для {product_id!r} не заполнен «Артикул WB» (nmId) — "
+                "WB API оперирует только реальными nmId, а не внутренним артикулом продавца."
             )
+        if DATA_STORE.get("source") == "excel":
+            hint_parts.append(
+                "Загружены Excel-данные — командный центр считается по локальному файлу, "
+                "а юнит-экономика всегда запрашивает WB API напрямую."
+            )
+        if not rows:
+            hint_parts.append(
+                "WB API не вернул строк за выбранный период. Проверьте, что период не старше 365 дней и не в будущем."
+            )
+        hint = " " + " ".join(hint_parts) if hint_parts else ""
         raise HTTPException(
             status_code=404,
             detail=(
                 f"Нет финансовых данных по товару {product_id} за период "
                 f"{date_from} — {date_to}. Проверьте, что артикул совпадает с WB "
                 f"(vendorCode/nmId) и в выбранном периоде есть продажи/выкупы."
-                f"{source_hint}"
+                f"{hint}"
             ),
         )
     grouped_rows = group_report_rows_by_rr_date(matched_rows)
