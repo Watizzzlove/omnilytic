@@ -1,20 +1,64 @@
 (function () {
     const app = window.WBApp;
 
-    function initTabs() {
-        document.querySelectorAll(".tab").forEach((tab) => {
-            tab.addEventListener("click", () => {
-                document.querySelectorAll(".tab").forEach((item) => item.classList.remove("active"));
-                document.querySelectorAll(".tab-content").forEach((content) => content.classList.remove("active"));
-                tab.classList.add("active");
-                document.getElementById(tab.dataset.tab).classList.add("active");
-            });
+    function renderHeaderFilters() {
+        const container = document.getElementById("headerFilters");
+        if (!container || typeof app.renderDateFilter !== "function") return;
+        container.innerHTML = app.renderDateFilter("general", {
+            compact: true,
+            placeholder: "Все товары",
+        });
+    }
+
+    function closeAllProductDropdowns() {
+        document.querySelectorAll(".product-dropdown-panel.open").forEach((panel) => panel.classList.remove("open"));
+    }
+
+    function switchPage(pageId) {
+        app.setCurrentPage(pageId);
+        document.querySelectorAll(".page-nav-link").forEach((button) => {
+            button.classList.toggle("active", button.dataset.page === pageId);
+        });
+        document.querySelectorAll(".page-section").forEach((section) => {
+            section.classList.toggle("active", section.id === `${pageId}Page`);
+        });
+
+        if (pageId === "command") {
+            app.renderCommandCenter();
+        } else if (pageId === "unit") {
+            app.loadUnitEconomicsPage();
+        } else if (pageId === "geo") {
+            const geo = document.getElementById("geoAnalyticsContent");
+            if (geo) {
+                geo.innerHTML = `
+                    <div class="section-wrapper block-cream">
+                        <div class="section-header">
+                            <div class="section-title-group">
+                                <span class="section-title">Гео-аналитика</span>
+                                <div class="section-desc">Раздел уже добавлен в навигацию и готов под следующее наполнение.</div>
+                            </div>
+                        </div>
+                        <div class="empty-state">
+                            <div class="empty-state-icon">MAP</div>
+                            <div class="empty-state-title">Пока пусто</div>
+                            <p>Страница подготовлена как отдельный раздел без наполнения.</p>
+                        </div>
+                    </div>
+                `;
+            }
+        }
+    }
+
+    function initNavigation() {
+        document.querySelectorAll(".page-nav-link").forEach((button) => {
+            button.addEventListener("click", () => switchPage(button.dataset.page));
         });
     }
 
     function initUploadZone() {
         const uploadZone = document.getElementById("uploadZone");
         const fileInput = document.getElementById("fileInput");
+        if (!uploadZone || !fileInput) return;
 
         uploadZone.addEventListener("dragover", (event) => {
             event.preventDefault();
@@ -46,135 +90,226 @@
         weekAgo.setDate(today.getDate() - 7);
         const formatDate = (date) => date.toISOString().split("T")[0];
 
-        const fromVal = formatDate(weekAgo);
-        const toVal = formatDate(today);
-
-        app.setDateFilters({ from: fromVal, to: toVal }, "general");
-        app.propagateSectionDates("general");
+        app.setDateFilters(
+            { from: formatDate(weekAgo), to: formatDate(today) },
+            "general",
+        );
     }
 
-    function closeAllProductDropdowns() {
-        document.querySelectorAll(".product-dropdown-panel.open").forEach(p => p.classList.remove("open"));
+    function updateDropdownButtons() {
+        document.querySelectorAll(".product-dropdown").forEach((dropdown) => {
+            const sectionId = dropdown.dataset.section;
+            const selected = app.getProductFilters(sectionId);
+            const single = dropdown.dataset.single === "true";
+            const button = dropdown.querySelector(".product-dropdown-btn");
+            if (!button) return;
+
+            let label = "Все товары";
+            if (selected.length) {
+                if (single) {
+                    const option = app.getProductOption(selected[0]);
+                    label = option?.label || selected[0];
+                } else {
+                    label = `Выбрано товаров: ${selected.length}`;
+                }
+            } else if (single) {
+                label = "Выберите один товар";
+            }
+
+            button.textContent = label;
+            button.classList.toggle("active", selected.length > 0);
+        });
     }
 
-    window.toggleProductDropdown = function (btn) {
-        const panel = btn.parentElement.querySelector(".product-dropdown-panel");
+    window.toggleProductDropdown = function (button) {
+        const panel = button.parentElement.querySelector(".product-dropdown-panel");
         if (!panel) return;
         const isOpen = panel.classList.contains("open");
         closeAllProductDropdowns();
         if (!isOpen) panel.classList.add("open");
     };
 
-    window.toggleProductItem = function (el) {
-        el.classList.toggle("selected");
-        const check = el.querySelector(".checkmark");
-        if (check) check.textContent = el.classList.contains("selected") ? "✓" : "";
+    window.filterProductDropdown = function (input) {
+        const panel = input.closest(".product-dropdown-panel");
+        if (!panel) return;
+        const query = input.value.trim().toLowerCase();
+        panel.querySelectorAll(".product-dropdown-item").forEach((item) => {
+            const haystack = item.dataset.search || "";
+            item.hidden = Boolean(query) && !haystack.includes(query);
+        });
     };
+
+    window.toggleProductItem = function (element) {
+        const dropdown = element.closest(".product-dropdown");
+        if (!dropdown) return;
+        const isSingle = dropdown.dataset.single === "true";
+        const itemId = element.dataset.id;
+
+        if (itemId === "__all__") {
+            const shouldSelect = !element.classList.contains("selected");
+            dropdown.querySelectorAll(".product-dropdown-item").forEach((item) => {
+                item.classList.remove("selected");
+                const check = item.querySelector(".checkmark");
+                if (check) check.textContent = "";
+            });
+            if (shouldSelect) {
+                element.classList.add("selected");
+                const check = element.querySelector(".checkmark");
+                if (check) check.textContent = "✓";
+            }
+            return;
+        }
+
+        if (isSingle) {
+            dropdown.querySelectorAll(".product-dropdown-item.selected").forEach((item) => {
+                if (item !== element) {
+                    item.classList.remove("selected");
+                    const check = item.querySelector(".checkmark");
+                    if (check) check.textContent = "";
+                }
+            });
+        }
+
+        const allOption = dropdown.querySelector('.product-dropdown-item[data-id="__all__"]');
+        if (allOption) {
+            allOption.classList.remove("selected");
+            const allCheck = allOption.querySelector(".checkmark");
+            if (allCheck) allCheck.textContent = "";
+        }
+
+        element.classList.toggle("selected");
+        const check = element.querySelector(".checkmark");
+        if (check) check.textContent = element.classList.contains("selected") ? "✓" : "";
+    };
+
+    function refreshCurrentPage() {
+        const page = app.getCurrentPage();
+        if (page === "command") {
+            const ids = app.getProductFilters("general").join(",");
+            app.loadDashboard(ids || undefined);
+        } else if (page === "unit") {
+            app.loadUnitEconomicsPage();
+        } else {
+            switchPage(page);
+        }
+    }
 
     window.applyProductFilters = function (sectionId) {
         const container = document.querySelector(`.product-dropdown[data-section="${sectionId}"]`);
         if (!container) return;
-        const items = container.querySelectorAll(".product-dropdown-item.selected");
-        const selected = Array.from(items).map(item => item.dataset.id);
+        const selected = Array.from(container.querySelectorAll(".product-dropdown-item.selected"))
+            .map((item) => item.dataset.id);
+        const normalized = selected.includes("__all__") ? [] : selected;
+        console.log("[APPLY] product filter " + sectionId + " -> " + JSON.stringify(normalized));
 
         if (sectionId === "general") {
-            for (const id of ["kpi", "funnel", "tables", "general"]) {
-                app.setProductFilters(id, selected);
-            }
-            closeAllProductDropdowns();
-            updateDropdownButtons();
-            const ids = selected.join(",");
-            if (ids) {
-                app.loadDashboard(ids);
-            } else {
-                app.loadDashboard();
-            }
-        } else if (sectionId === "tables") {
-            app.setProductFilters(sectionId, selected);
-            closeAllProductDropdowns();
-            updateDropdownButtons();
-            app.renderCommandCenter();
+            app.setProductFilters(sectionId, normalized);
         } else {
-            app.setProductFilters(sectionId, selected);
-            closeAllProductDropdowns();
-            updateDropdownButtons();
+            app.setProductFilters(sectionId, normalized, { markOverride: true });
+        }
+
+        closeAllProductDropdowns();
+        updateDropdownButtons();
+
+        if (sectionId === "tables") {
+            refreshCurrentPage();
+        } else if (sectionId === "kpi" || sectionId === "funnel") {
             app.loadSummaryForSection(sectionId);
+        } else if (sectionId === "ue_block1" || sectionId === "ue_block2") {
+            app.loadUnitEconomics(sectionId);
+        } else {
+            refreshCurrentPage();
         }
     };
 
     window.resetProductFilters = function (sectionId) {
+        const container = document.querySelector(`.product-dropdown[data-section="${sectionId}"]`);
         if (sectionId === "general") {
-            for (const id of ["kpi", "funnel", "tables", "general"]) {
-                app.setProductFilters(id, []);
-            }
-            closeAllProductDropdowns();
-            updateDropdownButtons();
-            app.loadDashboard();
+            app.setProductFilters("general", []);
         } else {
-            app.setProductFilters(sectionId, []);
-            closeAllProductDropdowns();
-            const container = document.querySelector(`.product-dropdown[data-section="${sectionId}"]`);
-            if (container) {
-                container.querySelectorAll(".product-dropdown-item.selected").forEach(el => {
-                    el.classList.remove("selected");
-                    const check = el.querySelector(".checkmark");
-                    if (check) check.textContent = "";
-                });
-            }
-            updateDropdownButtons();
-            app.renderCommandCenter();
+            app.resetProductOverride(sectionId);
+        }
+
+        if (container) {
+            const current = app.getProductFilters(sectionId);
+            container.querySelectorAll(".product-dropdown-item").forEach((item) => {
+                const shouldSelect = item.dataset.id === "__all__"
+                    ? current.length === 0 && container.dataset.single !== "true"
+                    : current.includes(item.dataset.id);
+                item.classList.toggle("selected", shouldSelect);
+                const check = item.querySelector(".checkmark");
+                if (check) check.textContent = shouldSelect ? "✓" : "";
+                item.hidden = false;
+            });
+            const searchInput = container.querySelector(".product-dropdown-search input");
+            if (searchInput) searchInput.value = "";
+        }
+
+        closeAllProductDropdowns();
+        updateDropdownButtons();
+
+        if (sectionId === "kpi" || sectionId === "funnel") {
+            app.loadSummaryForSection(sectionId);
+        } else if (sectionId === "ue_block1" || sectionId === "ue_block2") {
+            app.loadUnitEconomics(sectionId);
+        } else {
+            refreshCurrentPage();
         }
     };
-
-    function updateDropdownButtons() {
-        document.querySelectorAll(".product-dropdown").forEach(dd => {
-            const sectionId = dd.dataset.section;
-            const raw = app.getProductFilters(sectionId);
-            const selected = Array.isArray(raw) ? raw : [];
-            const hasFilters = selected.length > 0;
-            const text = hasFilters ? `выбраны товары (${selected.length})` : "фильтр по товарам";
-            const btn = dd.querySelector(".product-dropdown-btn");
-            if (btn) {
-                btn.textContent = text;
-                if (hasFilters) btn.classList.add("active"); else btn.classList.remove("active");
-            }
-        });
-    }
 
     window.applyDateFilter = function (sectionId) {
-        const filter = document.querySelector(`.date-filter[data-section="${sectionId}"]`);
-        if (!filter) return;
-        const dateFrom = filter.querySelector(".df-from")?.value;
-        const dateTo = filter.querySelector(".df-to")?.value;
-        if (!dateFrom || !dateTo) return;
+        const scope = document.querySelector(`.filter-stack[data-section="${sectionId}"]`);
+        if (!scope) return;
 
-        const apiKey = document.getElementById("wbApiKey")?.value.trim();
-        if (!apiKey) {
-            const bar = document.getElementById("wbApiBar");
-            if (bar) bar.scrollIntoView({ behavior: "smooth" });
-            alert("Для смены дат нужен WB API ключ. Введите его в панели WB API сверху.");
+        const dateFrom = scope.querySelector(".df-from")?.value;
+        const dateTo = scope.querySelector(".df-to")?.value;
+        if (!dateFrom || !dateTo) {
+            console.warn("[APPLY] date filter " + sectionId + " missing dates - skipped");
             return;
         }
+        console.log("[APPLY] date filter " + sectionId + " from=" + dateFrom + " to=" + dateTo);
 
-        app.setDateFilters({ from: dateFrom, to: dateTo }, sectionId);
-        if (sectionId === "general") {
-            app.propagateSectionDates("general");
+        app.setDateFilters(
+            { from: dateFrom, to: dateTo },
+            sectionId,
+            { markOverride: sectionId !== "general" },
+        );
+
+        if (sectionId === "kpi" || sectionId === "funnel") {
+            app.loadSummaryForSection(sectionId);
+        } else if (sectionId === "ue_block1" || sectionId === "ue_block2") {
+            app.loadUnitEconomics(sectionId);
+        } else {
+            refreshCurrentPage();
         }
-        app.fetchFromWbApi(sectionId);
     };
 
-    document.addEventListener("click", function (e) {
-        if (!e.target.closest(".product-dropdown")) {
+    window.resetDateFilter = function (sectionId) {
+        if (sectionId === "general") return;
+        app.resetDateOverride(sectionId);
+        app.renderCommandCenter();
+        if (app.getCurrentPage() === "unit") {
+            app.renderUnitEconomicsPage();
+            app.loadUnitEconomics(sectionId);
+        }
+    };
+
+    document.addEventListener("click", (event) => {
+        if (!event.target.closest(".product-dropdown")) {
             closeAllProductDropdowns();
         }
     });
 
     function initialize() {
-        initTabs();
+        initNavigation();
         initUploadZone();
         initDateFilters();
+        renderHeaderFilters();
+        updateDropdownButtons();
+        app.renderHeaderFilters = renderHeaderFilters;
         app.initWbApi();
         app.checkHealth();
+        switchPage("command");
     }
 
     if (document.readyState === "loading") {

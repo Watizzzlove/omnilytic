@@ -11,76 +11,82 @@
 </head>
 <body>
     <div class="page-shell">
-        <header class="top-nav">
-            <a class="brand" href="/">
-                <span class="brand-mark">OM</span>
-                <span class="brand-copy"><strong>Omnilytic</strong></span>
-            </a>
-            <div class="header-actions">
-                <div id="fileInfo" class="file-loaded" style="display: none;">
-                    <span class="status-dot"></span>
-                    <span id="fileName"></span>
+        <header class="app-header">
+            <div class="app-header-top">
+                <a class="brand" href="/">
+                    <span class="brand-mark">OM</span>
+                    <span class="brand-copy">
+                        <strong>Omnilytic</strong>
+                        <span>Аналитика маркетплейсов</span>
+                    </span>
+                </a>
+
+                <nav class="page-nav" aria-label="Разделы">
+                    <button type="button" class="page-nav-link active" data-page="command">Командный центр</button>
+                    <button type="button" class="page-nav-link" data-page="unit">Юнит-экономика</button>
+                    <button type="button" class="page-nav-link" data-page="geo">Гео-аналитика</button>
+                </nav>
+
+                <div class="header-actions">
+                    <div id="fileInfo" class="file-loaded" style="display:none;">
+                        <span class="status-dot"></span>
+                        <span id="fileName"></span>
+                    </div>
+                    <label class="upload-zone" id="uploadZone">
+                        <input type="file" accept=".xlsx,.xls" id="fileInput">
+                        <span>Загрузить Excel</span>
+                    </label>
+                    <button type="button" class="wb-api-toggle" id="wbApiToggle" onclick="toggleWbApiPanel()">Загрузить API-токен</button>
+                    <button type="button" class="reset-btn" id="resetBtn" onclick="resetData()">Сбросить данные</button>
                 </div>
-                <label class="upload-zone" id="uploadZone">
-                    <input type="file" accept=".xlsx,.xls" id="fileInput">
-                    <span>[+] Excel</span>
-                </label>
-                <button class="wb-api-toggle" id="wbApiToggle" onclick="toggleWbApiPanel()">[~] WB API</button>
+            </div>
+
+            <div class="app-header-bottom">
+                <div id="headerFilters" class="header-filters"></div>
+            </div>
+
+            <div class="wb-api-bar" id="wbApiBar">
+                <div class="wb-api-row">
+                    <div class="wb-api-field">
+                        <label for="wbApiKey">WB API токен</label>
+                        <input type="password" id="wbApiKey" placeholder="Вставьте персональный токен">
+                    </div>
+                    <button type="button" class="wb-api-btn" id="wbApiFetchBtn" onclick="fetchFromWbApi()">Загрузить</button>
+                </div>
+                <div id="wbApiStatus" class="wb-api-status"></div>
             </div>
         </header>
 
-        <div class="wb-api-bar" id="wbApiBar">
-            <div class="wb-api-row">
-                <div class="wb-api-field">
-                    <label>API ключ</label>
-                    <input type="password" id="wbApiKey" placeholder="Токен WB API">
-                </div>
-                <button class="wb-api-btn" id="wbApiFetchBtn" onclick="fetchFromWbApi()">Загрузить</button>
-            </div>
-            <div id="wbApiStatus" class="wb-api-status"></div>
-        </div>
-
-        <nav class="tabs" aria-label="Разделы дашборда">
-            <button class="tab active" data-tab="command">[+] Командный центр</button>
-            <button class="tab" data-tab="matrix">[x] Матрица решений</button>
-            <button class="tab" data-tab="actions">[-] План действий</button>
-        </nav>
-
-        <main>
-            <section id="command" class="tab-content active">
+        <main class="app-main">
+            <section id="commandPage" class="page-section active">
                 <div id="commandContent">
                     <div class="empty-state">
                         <div class="empty-state-icon">OM</div>
                         <div class="empty-state-title">Загрузите данные</div>
-                        <p>Перетащите Excel-файл или используйте WB API, чтобы заполнить дашборд.</p>
+                        <p>Загрузите Excel или подтяните данные через WB API, чтобы заполнить командный центр.</p>
                     </div>
                 </div>
             </section>
 
-            <section id="matrix" class="tab-content">
-                <div id="matrixContent">
+            <section id="unitPage" class="page-section">
+                <div id="unitEconomicsContent">
                     <div class="empty-state">
-                        <div class="empty-state-icon">4x4</div>
-                        <div class="empty-state-title">Матрица появится после загрузки</div>
+                        <div class="empty-state-icon">UE</div>
+                        <div class="empty-state-title">Юнит-экономика готова к заполнению</div>
+                        <p>После загрузки данных выберите один товар и период, чтобы собрать экономический состав товара.</p>
                     </div>
                 </div>
             </section>
 
-            <section id="actions" class="tab-content">
-                <div id="actionsContent">
-                    <div class="empty-state">
-                        <div class="empty-state-icon">GO</div>
-                        <div class="empty-state-title">План действий появится после анализа</div>
-                    </div>
-                </div>
+            <section id="geoPage" class="page-section">
+                <div id="geoAnalyticsContent"></div>
             </section>
         </main>
     </div>
 
     <script defer src="static/js/state.js"></script>
     <script defer src="static/js/render-command.js"></script>
-    <script defer src="static/js/render-matrix.js"></script>
-    <script defer src="static/js/render-actions.js"></script>
+    <script defer src="static/js/render-unit-economics.js"></script>
     <script defer src="static/js/export.js"></script>
     <script defer src="static/js/api.js"></script>
     <script defer src="static/js/main.js"></script>

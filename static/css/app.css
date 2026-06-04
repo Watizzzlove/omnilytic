@@ -51,9 +51,52 @@ a {
 }
 
 .page-shell {
-    width: min(1280px, 100%);
+    width: 100%;
     margin: 0 auto;
-    padding: 0 24px;
+    padding: 0 24px 40px;
+}
+
+.app-header {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    padding: 18px 0;
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.96), rgba(255,255,255,0.92)),
+        radial-gradient(circle at top left, rgba(220,238,177,0.34), transparent 36%),
+        radial-gradient(circle at top right, rgba(197,176,244,0.22), transparent 28%);
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--ink);
+}
+
+.app-header-top {
+    display: grid;
+    grid-template-columns: minmax(220px, 280px) 1fr auto;
+    gap: 18px;
+    align-items: center;
+}
+
+.app-header-bottom {
+    margin-top: 16px;
+}
+
+.header-filters {
+    padding: 16px 18px;
+    border: 1px solid var(--ink);
+    border-radius: 18px;
+    background: rgba(255,255,255,0.74);
+}
+
+.app-main {
+    padding-top: 28px;
+}
+
+.page-section {
+    display: none;
+}
+
+.page-section.active {
+    display: block;
 }
 
 /* ─── Top Nav ─── */
@@ -96,14 +139,58 @@ a {
     color: var(--ink);
 }
 
+.brand-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.brand-copy span {
+    font-size: 12px;
+    opacity: 0.55;
+}
+
+.page-nav {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.page-nav-link {
+    min-height: 38px;
+    padding: 8px 16px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: rgba(0,0,0,0.56);
+    font-size: 15px;
+    font-weight: 500;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.page-nav-link:hover {
+    color: var(--ink);
+    border-color: var(--hairline);
+}
+
+.page-nav-link.active {
+    color: var(--ink);
+    border-color: var(--ink);
+    background: rgba(255,255,255,0.88);
+}
+
 .header-actions {
     display: flex;
     gap: 8px;
     align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
 }
 
 /* ─── Buttons (all pills) ─── */
-.upload-zone, .wb-api-toggle, .wb-api-btn, .ai-button, .tab {
+.upload-zone, .wb-api-toggle, .wb-api-btn, .ai-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -179,8 +266,15 @@ a {
 /* ─── WB API Bar ─── */
 .wb-api-bar {
     display: none;
-    padding: 16px 0;
-    border-bottom: 1px solid var(--hairline);
+    margin-top: 14px;
+    padding: 16px 18px;
+    border: 1px solid var(--ink);
+    border-radius: 18px;
+    background: rgba(255,255,255,0.88);
+}
+
+.wb-api-bar.open {
+    display: block;
 }
 
 .wb-api-row {
@@ -310,6 +404,51 @@ a {
     opacity: 0.55;
 }
 
+.header-hint {
+    font-size: 14px;
+    color: rgba(0,0,0,0.58);
+}
+
+.filter-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.filter-stack.compact {
+    min-width: min(100%, 560px);
+}
+
+.filter-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.filter-stack label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 14px;
+    color: var(--ink);
+}
+
+.filter-stack input[type="date"] {
+    min-height: 34px;
+    padding: 6px 10px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm);
+    color: var(--ink);
+    background: var(--canvas);
+    font-size: 14px;
+}
+
+.filter-stack input[type="date"]:focus {
+    border-color: var(--ink);
+    outline: none;
+}
+
 /* ─── Date filter ─── */
 .date-filter {
     display: flex;
@@ -362,10 +501,26 @@ a {
 
 .df-btn:hover { opacity: 0.8; }
 
+.df-reset {
+    min-height: 34px;
+    padding: 6px 12px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--ink);
+    font-size: 14px;
+}
+
+.filter-note {
+    font-size: 12px;
+    color: rgba(0,0,0,0.56);
+}
+
 /* ─── Product dropdown ─── */
 .product-dropdown {
     position: relative;
-    min-width: 200px;
+    min-width: 360px;
+    width: min(100%, 520px);
 }
 
 .product-dropdown-btn {
@@ -403,28 +558,52 @@ a {
     position: absolute;
     top: 100%;
     left: 0;
-    right: 0;
+    right: auto;
+    width: min(640px, calc(100vw - 48px));
     z-index: 100;
     margin-top: 4px;
     border: 1px solid var(--hairline);
     border-radius: var(--radius-sm);
     background: var(--canvas);
-    max-height: 300px;
-    overflow-y: auto;
+    max-height: min(70vh, 520px);
+    overflow: hidden;
+    box-shadow: 0 14px 40px rgba(0,0,0,0.08);
 }
 
 .product-dropdown-panel.open {
     display: block;
 }
 
+.product-dropdown-search {
+    padding: 10px;
+    border-bottom: 1px solid var(--hairline);
+}
+
+.product-dropdown-search input {
+    width: 100%;
+    min-height: 38px;
+    padding: 8px 12px;
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    background: var(--canvas);
+}
+
+.product-dropdown-list {
+    max-height: min(48vh, 420px);
+    overflow-y: auto;
+}
+
 .product-dropdown-item {
     padding: 8px 12px;
     cursor: pointer;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 8px;
     font-size: 14px;
     border-bottom: 1px solid var(--hairline-soft);
+    background: transparent;
+    width: 100%;
+    text-align: left;
 }
 
 .product-dropdown-item:hover {
@@ -455,9 +634,39 @@ a {
 }
 
 .product-dropdown-item .item-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow: visible;
+    text-overflow: initial;
+    white-space: normal;
+    line-height: 1.35;
+}
+
+.item-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+}
+
+.item-subtitle {
+    font-size: 12px;
+    opacity: 0.56;
+    white-space: normal;
+    line-height: 1.35;
+}
+
+.product-dropdown-item-all {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: #f7f7f5;
+    border-bottom: 1px solid var(--hairline);
+}
+
+.product-dropdown-empty {
+    padding: 16px 12px;
+    font-size: 14px;
+    color: rgba(0,0,0,0.54);
 }
 
 .product-dropdown-actions {
@@ -934,6 +1143,232 @@ tr:hover { background: var(--surface-soft); }
 .action-card.critical { border-left-color: var(--danger); }
 .action-card.important { border-left-color: var(--warning); }
 .action-card.opportunities { border-left-color: var(--success); }
+
+/* Unit economics */
+.ue-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 1fr);
+    gap: 18px;
+    align-items: start;
+}
+
+.ue-scales,
+.ue-chart-card,
+.ue-table-wrap {
+    border: 1px solid var(--hairline);
+    border-radius: 18px;
+    background: rgba(255,255,255,0.9);
+    padding: 18px;
+}
+
+.ue-overview {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 18px;
+}
+
+.ue-overview-item {
+    padding: 14px;
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    background: var(--surface-soft);
+}
+
+.ue-overview-item span {
+    display: block;
+    font-size: 12px;
+    opacity: 0.58;
+    margin-bottom: 4px;
+}
+
+.ue-overview-item strong {
+    font-size: 20px;
+    font-family: "JetBrains Mono", "SF Mono", monospace;
+}
+
+.ue-scale {
+    margin-bottom: 14px;
+}
+
+.ue-scale:last-child {
+    margin-bottom: 0;
+}
+
+.ue-scale.summary {
+    padding: 14px;
+    border: 1px solid var(--ink);
+    border-radius: 16px;
+    background: rgba(17,17,17,0.03);
+}
+
+.ue-scale-title {
+    margin-bottom: 8px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.ue-scale-bar {
+    display: flex;
+    min-height: 52px;
+    border-radius: 14px;
+    overflow: hidden;
+    background: #f2f2f2;
+}
+
+.ue-scale-segment {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    padding: 10px 12px;
+    font-family: "JetBrains Mono", "SF Mono", monospace;
+    font-size: 12px;
+}
+
+.ue-scale-segment span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ue-scale-segment.start {
+    justify-content: flex-start;
+    background: var(--block-lime);
+}
+
+.ue-scale-segment.end {
+    justify-content: flex-end;
+    background: var(--block-lilac);
+}
+
+.ue-pie-block {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.ue-pie-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.ue-pie-total {
+    font-size: 32px;
+    font-family: "JetBrains Mono", "SF Mono", monospace;
+}
+
+.ue-pie-products {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    font-size: 13px;
+    color: rgba(0,0,0,0.62);
+}
+
+.ue-pie-chart {
+    width: min(100%, 340px);
+    aspect-ratio: 1 / 1;
+    margin: 0 auto;
+    border-radius: 50%;
+    border: 12px solid rgba(0,0,0,0.04);
+}
+
+.ue-legend {
+    display: grid;
+    gap: 10px;
+}
+
+.ue-legend-item {
+    display: grid;
+    grid-template-columns: 16px 1fr auto;
+    gap: 10px;
+    align-items: center;
+    font-size: 13px;
+}
+
+.ue-legend-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+}
+
+.ue-note {
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: rgba(0,0,0,0.62);
+}
+
+.ue-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+.ue-table th,
+.ue-table td {
+    padding: 12px 10px;
+    border-bottom: 1px solid var(--hairline);
+    text-align: left;
+    vertical-align: top;
+}
+
+.ue-table thead th {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: rgba(0,0,0,0.58);
+}
+
+.ue-empty {
+    padding: 28px 18px;
+    border: 1px dashed var(--hairline);
+    border-radius: 18px;
+    background: rgba(255,255,255,0.74);
+}
+
+.ue-empty p {
+    color: rgba(0,0,0,0.58);
+}
+
+@media (max-width: 1100px) {
+    .app-header-top {
+        grid-template-columns: 1fr;
+        justify-items: start;
+    }
+
+    .page-nav {
+        justify-content: flex-start;
+    }
+
+    .header-actions {
+        justify-content: flex-start;
+    }
+
+    .ue-layout {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 860px) {
+    .page-shell {
+        padding: 0 16px 28px;
+    }
+
+    .kpi-grid,
+    .kpi-grid-5,
+    .grid-2 {
+        grid-template-columns: 1fr;
+    }
+
+    .ue-overview {
+        grid-template-columns: 1fr;
+    }
+
+    .ue-table-wrap {
+        overflow-x: auto;
+    }
+}
 
 .action-title {
     font-size: 16px;

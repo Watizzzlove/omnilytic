@@ -1,21 +1,32 @@
 """
 Omnilytic - Backend API
 """
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+log = logging.getLogger("omnilytic")
+
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+import io
 import pandas as pd
 import json
 from typing import Optional
 import os
+import sys
 from datetime import datetime
 import httpx
 from anthropic import Anthropic
 from pydantic import BaseModel
 from wb_api_client import (
+    fetch_commission_tariffs,
     fetch_sales_funnel,
+    fetch_sales_report_details_by_period,
     fetch_search_report_overview,
     map_api_to_internal,
     resolve_periods,
@@ -50,6 +61,10 @@ DATA_STORE = {
     "search_report_metrics": None,
     "metrics_availability": None,
     "metrics_origin": None,
+    "unit_cache": {},
+    "commission_cache": {},
+    "dashboard_cache": {},
+    "wb_api_key": None,
 }
 
 # Маппинг колонок
@@ -246,6 +261,389 @@ def build_metrics_meta_for_wb(search_report_metrics=None, search_report_reason=N
     return availability, origin
 
 
+UNIT_SCALE_META = [
+    {"key": "retail_price", "label": "Итоговая цена", "color": "#111111", "is_summary": True},
+    {"key": "commission", "label": "Комиссия WB", "color": "#1f1d3d"},
+    {"key": "logistics", "label": "Логистика", "color": "#d98c10"},
+    {"key": "storage", "label": "Хранение", "color": "#8c6a3c"},
+    {"key": "acquiring", "label": "Эквайринг", "color": "#0b7285"},
+    {"key": "penalties", "label": "Штрафы", "color": "#d8373a"},
+    {"key": "acceptance", "label": "Приемка", "color": "#7c4dff"},
+    {"key": "deductions", "label": "Удержания", "color": "#9c36b5"},
+    {"key": "additional_payments", "label": "Доплаты", "color": "#ff7b00"},
+    {"key": "seller_payout", "label": "К перечислению продавцу", "color": "#1ea64a"},
+]
+
+TARIFF_ROW_META = [
+    {"key": "commission", "label": "Комиссия за продажу", "kind": "pct"},
+    {"key": "logistics", "label": "Логистика", "kind": "rub"},
+    {"key": "storage", "label": "Хранение", "kind": "rub"},
+    {"key": "acquiring", "label": "Эквайринг", "kind": "pct"},
+    {"key": "penalties", "label": "Штрафы", "kind": "rub"},
+    {"key": "acceptance", "label": "Приемка", "kind": "rub"},
+    {"key": "deductions", "label": "Удержания", "kind": "rub"},
+    {"key": "additional_payments", "label": "Доплаты", "kind": "rub"},
+]
+
+
+def clean_date_like(value):
+    if not value:
+        return ""
+    text = str(value)
+    return text[:10]
+
+
+def format_product_label(product):
+    seller_article = str(product.get("seller_article") or "").strip()
+    wb_article = str(product.get("wb_article") or "").strip()
+    name = str(product.get("name") or "").strip()
+    parts = [part for part in [seller_article, wb_article, name] if part]
+    return " / ".join(parts[:2]) if len(parts) > 1 else (parts[0] if parts else "Товар")
+
+
+def find_product_record(product_id: str):
+    for item in DATA_STORE.get("processed_data") or []:
+        seller_article = str(item.get("seller_article") or "")
+        wb_article = str(item.get("wb_article") or "")
+        if product_id in {seller_article, wb_article}:
+            return item
+    return None
+
+
+def get_filter_products():
+    products = []
+    seen = set()
+    for item in DATA_STORE.get("processed_data") or []:
+        seller_article = str(item.get("seller_article") or "").strip()
+        wb_article = str(item.get("wb_article") or "").strip()
+        option_id = seller_article or wb_article
+        if not option_id or option_id in seen:
+            continue
+        seen.add(option_id)
+        products.append({
+            "id": option_id,
+            "seller_article": seller_article,
+            "wb_article": wb_article,
+            "name": item.get("name", ""),
+            "category": item.get("category", ""),
+            "label": format_product_label(item),
+        })
+
+    products.sort(key=lambda row: (str(row.get("name") or "").lower(), row["id"]))
+    return products
+
+
+def group_report_rows_by_rr_date(rows):
+    grouped = {}
+    for row in rows:
+        rr_date = clean_date_like(row.get("rrDate") or row.get("saleDt") or row.get("dateFrom"))
+        if not rr_date:
+            continue
+        grouped.setdefault(rr_date, []).append(row)
+    return grouped
+
+
+def match_report_row_to_product(row, product_id: str):
+    product_id = str(product_id or "")
+    return product_id in {
+        str(row.get("vendorCode") or ""),
+        str(row.get("nmId") or ""),
+    }
+
+
+def compute_unit_components(rows: list[dict]) -> dict:
+    retail_price = sum(safe_float(row.get("retailPriceWithDisc")) for row in rows)
+    commission = sum(safe_float(row.get("ppvzSalesCommission")) for row in rows)
+    logistics = sum(safe_float(row.get("rebillLogisticCost")) for row in rows)
+    storage = sum(safe_float(row.get("paidStorage")) for row in rows)
+    acquiring = sum(safe_float(row.get("acquiringFee")) for row in rows)
+    penalties = sum(safe_float(row.get("penalty")) for row in rows)
+    acceptance = sum(safe_float(row.get("paidAcceptance")) for row in rows)
+    deductions = sum(safe_float(row.get("deduction")) for row in rows)
+    additional_payments = sum(safe_float(row.get("additionalPayment")) for row in rows)
+
+    seller_payout = (
+        retail_price
+        - commission
+        - logistics
+        - storage
+        - acquiring
+        - penalties
+        - acceptance
+        - deductions
+        - additional_payments
+    )
+
+    return {
+        "retail_price": round(retail_price, 2),
+        "commission": round(commission, 2),
+        "logistics": round(logistics, 2),
+        "storage": round(storage, 2),
+        "acquiring": round(acquiring, 2),
+        "penalties": round(penalties, 2),
+        "acceptance": round(acceptance, 2),
+        "deductions": round(deductions, 2),
+        "additional_payments": round(additional_payments, 2),
+        "seller_payout": round(seller_payout, 2),
+    }
+
+
+def build_scale_item(meta: dict, start_components: dict, end_components: dict):
+    start_value = safe_float(start_components.get(meta["key"], 0))
+    end_value = safe_float(end_components.get(meta["key"], 0))
+    start_revenue = safe_float(start_components.get("retail_price", 0))
+    end_revenue = safe_float(end_components.get("retail_price", 0))
+
+    start_pct = round((start_value / start_revenue) * 100, 2) if start_revenue else 0.0
+    end_pct = round((end_value / end_revenue) * 100, 2) if end_revenue else 0.0
+    total_pct = abs(start_pct) + abs(end_pct)
+
+    return {
+        "key": meta["key"],
+        "label": meta["label"],
+        "color": meta["color"],
+        "is_summary": meta.get("is_summary", False),
+        "start": {
+            "value": round(start_value, 2),
+            "pct": start_pct,
+            "width": round(abs(start_pct) / total_pct, 4) if total_pct else 0.0,
+        },
+        "end": {
+            "value": round(end_value, 2),
+            "pct": end_pct,
+            "width": round(abs(end_pct) / total_pct, 4) if total_pct else 0.0,
+        },
+    }
+
+
+def build_tariff_actual_row(key: str, kind: str, components: dict):
+    revenue = safe_float(components.get("retail_price", 0))
+    value = safe_float(components.get(key, 0))
+    if kind == "pct":
+        if revenue <= 0:
+            return None
+        return round((value / revenue) * 100, 2)
+    return round(value, 2)
+
+
+def build_tariff_change(kind: str, start_value, end_value):
+    if start_value is None or end_value is None:
+        return None
+    if kind == "pct":
+        return round(end_value - start_value, 2)
+    if start_value == 0:
+        return None
+    return round(((end_value - start_value) / start_value) * 100, 2)
+
+
+def resolve_standard_commission_rate(commission_payload: dict, subject_name: str, delivery_method: str):
+    report = (commission_payload or {}).get("report") or []
+    delivery_method_upper = str(delivery_method or "").upper()
+    subject_name = str(subject_name or "").strip().lower()
+
+    matched = None
+    for row in report:
+        if str(row.get("subjectName") or "").strip().lower() == subject_name:
+            matched = row
+            break
+
+    if not matched:
+        return None
+
+    if "FBS" in delivery_method_upper or "DBS" in delivery_method_upper:
+        return safe_float(matched.get("kgvpSupplier"), None)
+    return safe_float(matched.get("kgvpMarketplace"), None)
+
+
+async def get_commission_tariffs_cached(api_key: str):
+    cache_key = api_key.strip()
+    if not cache_key:
+        return None
+
+    cached = DATA_STORE["commission_cache"].get(cache_key)
+    if cached is not None:
+        return cached
+
+    payload = await fetch_commission_tariffs(api_key=api_key, locale="ru")
+    DATA_STORE["commission_cache"][cache_key] = payload
+    return payload
+
+
+async def get_unit_economics_payload(api_key: str, date_from: str, date_to: str, product_id: str):
+    cache_key = "|".join([api_key.strip(), date_from, date_to, product_id])
+    cached = DATA_STORE["unit_cache"].get(cache_key)
+    if cached is not None:
+        return cached
+
+    fields = [
+        "rrdId",
+        "nmId",
+        "vendorCode",
+        "title",
+        "subjectName",
+        "rrDate",
+        "saleDt",
+        "deliveryMethod",
+        "srvDbs",
+        "retailPriceWithDisc",
+        "ppvzSalesCommission",
+        "acquiringFee",
+        "rebillLogisticCost",
+        "paidStorage",
+        "penalty",
+        "deduction",
+        "additionalPayment",
+        "paidAcceptance",
+    ]
+    rows = await fetch_sales_report_details_by_period(
+        api_key=api_key,
+        date_from=date_from,
+        date_to=date_to,
+        period="daily",
+        fields=fields,
+    )
+    matched_rows = [row for row in rows if match_report_row_to_product(row, product_id)]
+    if not matched_rows:
+        log.warning(
+            "UE: no financial data for product_id=%r dates=%s..%s (rows received: %d)",
+            product_id, date_from, date_to, len(rows),
+        )
+        source_hint = ""
+        if DATA_STORE.get("source") == "excel":
+            source_hint = (
+                " Загружены Excel-данные — командный центр считается по локальному файлу, "
+                "а юнит-экономика всегда запрашивает WB API напрямую. "
+                "Артикулы из Excel могут не совпадать с реальными vendorCode в WB."
+            )
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Нет финансовых данных по товару {product_id} за период "
+                f"{date_from} — {date_to}. Проверьте, что артикул совпадает с WB "
+                f"(vendorCode/nmId) и в выбранном периоде есть продажи/выкупы."
+                f"{source_hint}"
+            ),
+        )
+    grouped_rows = group_report_rows_by_rr_date(matched_rows)
+
+    start_rows = grouped_rows.get(date_from, [])
+    end_rows = grouped_rows.get(date_to, [])
+
+    start_components = compute_unit_components(start_rows)
+    end_components = compute_unit_components(end_rows)
+    period_components = compute_unit_components(matched_rows)
+
+    product_record = find_product_record(product_id) or {}
+    first_row = matched_rows[0] if matched_rows else {}
+    product_name = first_row.get("title") or product_record.get("name") or "Товар"
+    subject_name = first_row.get("subjectName") or product_record.get("category") or ""
+    delivery_method = first_row.get("deliveryMethod") or ""
+
+    scales = [
+        build_scale_item(meta, start_components, end_components)
+        for meta in UNIT_SCALE_META
+    ]
+
+    pie_segments = []
+    period_revenue = safe_float(period_components.get("retail_price", 0))
+    for meta in UNIT_SCALE_META:
+        if meta.get("is_summary"):
+            continue
+        value = safe_float(period_components.get(meta["key"], 0))
+        if value <= 0:
+            continue
+        pct = round((value / period_revenue) * 100, 2) if period_revenue else 0.0
+        pie_segments.append({
+            "key": meta["key"],
+            "label": meta["label"],
+            "value": round(value, 2),
+            "pct": pct,
+            "color": meta["color"],
+        })
+
+    commission_payload = None
+    commission_error = None
+    try:
+        commission_payload = await get_commission_tariffs_cached(api_key)
+    except Exception:
+        commission_error = "Стандартные комиссии сейчас недоступны."
+
+    standard_commission = resolve_standard_commission_rate(
+        commission_payload or {},
+        subject_name=subject_name,
+        delivery_method=delivery_method,
+    )
+
+    tariff_rows = []
+    for meta in TARIFF_ROW_META:
+        standard_start = standard_commission if meta["key"] == "commission" else None
+        standard_end = standard_commission if meta["key"] == "commission" else None
+        actual_start = build_tariff_actual_row(meta["key"], meta["kind"], start_components)
+        actual_end = build_tariff_actual_row(meta["key"], meta["kind"], end_components)
+        tariff_rows.append({
+            "key": meta["key"],
+            "label": meta["label"],
+            "kind": meta["kind"],
+            "start": {
+                "standard": standard_start,
+                "actual": actual_start,
+            },
+            "end": {
+                "standard": standard_end,
+                "actual": actual_end,
+            },
+            "change": {
+                "standard": build_tariff_change(meta["kind"], standard_start, standard_end),
+                "actual": build_tariff_change(meta["kind"], actual_start, actual_end),
+            },
+        })
+
+    payload = {
+        "product": {
+            "id": product_id,
+            "name": product_name,
+            "subject_name": subject_name,
+            "seller_article": product_record.get("seller_article") or first_row.get("vendorCode"),
+            "wb_article": product_record.get("wb_article") or first_row.get("nmId"),
+            "label": format_product_label(product_record or {
+                "seller_article": first_row.get("vendorCode"),
+                "wb_article": first_row.get("nmId"),
+                "name": product_name,
+            }),
+        },
+        "filters": {
+            "date_from": date_from,
+            "date_to": date_to,
+            "product_id": product_id,
+        },
+        "start_date": {
+            "date": date_from,
+            "retail_price": start_components.get("retail_price", 0),
+        },
+        "end_date": {
+            "date": date_to,
+            "retail_price": end_components.get("retail_price", 0),
+        },
+        "scales": scales,
+        "pie": {
+            "total_revenue": round(period_revenue, 2),
+            "product_breakdown": [
+                {
+                    "label": product_name,
+                    "value": round(period_revenue, 2),
+                }
+            ],
+            "segments": pie_segments,
+        },
+        "tariffs": {
+            "rows": tariff_rows,
+            "standard_note": commission_error,
+        },
+    }
+    DATA_STORE["unit_cache"][cache_key] = payload
+    return payload
+
+
 def classify_product(row):
     """Классификация товара по матрице BCG"""
     orders_dynamics = calculate_dynamics(
@@ -306,6 +704,110 @@ def process_data(df):
     return records
 
 
+def enrich_processed_records(records):
+    """Р”РѕР±Р°РІР»СЏРµС‚ РІС‹С‡РёСЃР»СЏРµРјС‹Рµ РїРѕР»СЏ Рє РЅРѕСЂРјР°Р»РёР·РѕРІР°РЅРЅС‹Рј Р·Р°РїРёСЃСЏРј."""
+    return process_data(pd.DataFrame.from_records(records).rename(columns={}))
+
+
+async def build_wb_dashboard_snapshot(api_key: str, date_from: str, date_to: str):
+    cache_key = "|".join([api_key.strip(), date_from, date_to])
+    cached = DATA_STORE["dashboard_cache"].get(cache_key)
+    if cached:
+        return cached
+
+    periods = resolve_periods(date_from, date_to)
+    api_products = await fetch_sales_funnel(
+        api_key=api_key,
+        date_from=periods["current_from"],
+        date_to=periods["current_to"],
+        past_from=periods["past_from"],
+        past_to=periods["past_to"],
+    )
+    mapped = map_api_to_internal(api_products)
+    search_report_metrics = None
+    search_report_reason = None
+
+    try:
+        current_search = await fetch_search_report_overview(
+            api_key=api_key,
+            date_from=periods["current_from"],
+            date_to=periods["current_to"],
+            past_from=periods["past_from"],
+            past_to=periods["past_to"],
+        )
+        search_report_metrics = {
+            "current": current_search,
+            "previous": {
+                "visibility": current_search.get("visibility_prev", 0),
+                "open_card": current_search.get("open_card_prev", 0),
+            },
+        }
+    except Exception as exc:
+        search_report_reason = format_search_report_error(exc)
+
+    metrics_availability, metrics_origin = build_metrics_meta_for_wb(
+        search_report_metrics,
+        search_report_reason,
+    )
+    snapshot = {
+        "raw_data": mapped,
+        "processed_data": enrich_processed_records(mapped),
+        "upload_date": datetime.now().isoformat(),
+        "period": {
+            "from": periods["current_from"],
+            "to": periods["current_to"],
+            "prev_from": periods["past_from"],
+            "prev_to": periods["past_to"],
+        },
+        "source": "wb_api",
+        "search_report_metrics": search_report_metrics,
+        "metrics_availability": metrics_availability,
+        "metrics_origin": metrics_origin,
+    }
+    DATA_STORE["dashboard_cache"][cache_key] = snapshot
+    DATA_STORE["raw_data"] = mapped
+    DATA_STORE["processed_data"] = enrich_processed_records(mapped)
+    DATA_STORE["period"] = snapshot["period"]
+    DATA_STORE["upload_date"] = snapshot["upload_date"]
+    DATA_STORE["search_report_metrics"] = search_report_metrics
+    DATA_STORE["metrics_availability"] = metrics_availability
+    DATA_STORE["metrics_origin"] = metrics_origin
+    log.info(
+        "WB-SNAPSHOT: rebuilt for %s — %s (%d products), DATA_STORE updated",
+        periods["current_from"], periods["current_to"], len(mapped),
+    )
+    return snapshot
+
+
+async def get_dashboard_snapshot(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
+    log.info(
+        "SNAPSHOT: date_from=%r date_to=%r source=%r processed_count=%d",
+        date_from, date_to, DATA_STORE.get("source"),
+        len(DATA_STORE.get("processed_data") or []),
+    )
+    if date_from and date_to:
+        if DATA_STORE.get("source") == "wb_api" and DATA_STORE.get("wb_api_key"):
+            return await build_wb_dashboard_snapshot(
+                DATA_STORE["wb_api_key"],
+                date_from,
+                date_to,
+            )
+
+    return {
+        "raw_data": DATA_STORE.get("raw_data"),
+        "processed_data": DATA_STORE.get("processed_data"),
+        "upload_date": DATA_STORE.get("upload_date"),
+        "period": DATA_STORE.get("period"),
+        "source": DATA_STORE.get("source") or "excel",
+        "search_report_metrics": DATA_STORE.get("search_report_metrics") or {},
+        "metrics_availability": DATA_STORE.get("metrics_availability") or {},
+        "metrics_origin": DATA_STORE.get("metrics_origin") or {},
+    }
+
+
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
     """Загрузка Excel файла с данными"""
@@ -315,7 +817,7 @@ async def upload_file(file: UploadFile = File(...)):
     try:
         # Читаем файл
         contents = await file.read()
-        df = pd.read_excel(contents, sheet_name=0)
+        df = pd.read_excel(io.BytesIO(contents), sheet_name=0)
 
         # Обрабатываем данные
         processed = process_data(df)
@@ -324,9 +826,12 @@ async def upload_file(file: UploadFile = File(...)):
         DATA_STORE["raw_data"] = df.to_dict('records')
         DATA_STORE["processed_data"] = processed
         DATA_STORE["upload_date"] = datetime.now().isoformat()
+        DATA_STORE["unit_cache"] = {}
+        DATA_STORE["dashboard_cache"] = {}
         DATA_STORE["filename"] = file.filename
         DATA_STORE["period"] = None
         DATA_STORE["source"] = "excel"
+        DATA_STORE["wb_api_key"] = None
         DATA_STORE["search_report_metrics"] = None
         (
             DATA_STORE["metrics_availability"],
@@ -353,17 +858,29 @@ def filter_products(data, product_ids_str):
 
 
 @app.get("/api/dashboard/summary")
-async def get_dashboard_summary(product_ids: Optional[str] = None):
+async def get_dashboard_summary(
+    product_ids: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
     """Получение сводных KPI для дашборда с средневзвешенными показателями"""
-    if DATA_STORE["processed_data"] is None:
-        raise HTTPException(status_code=404, detail="Данные не загружены")
+    log.info(
+        "SUMMARY: product_ids=%r date_from=%r date_to=%r source=%r",
+        product_ids, date_from, date_to, DATA_STORE.get("source"),
+    )
+    snapshot = await get_dashboard_snapshot(date_from, date_to)
+    if not snapshot.get("processed_data"):
+        raise HTTPException(
+            status_code=404,
+            detail="Нет данных. Сначала загрузите Excel или подтяните данные через WB API.",
+        )
 
-    data = filter_products(DATA_STORE["processed_data"], product_ids)
+    data = filter_products(snapshot["processed_data"], product_ids)
 
-    source = DATA_STORE.get("source") or "excel"
-    metrics_availability = DATA_STORE.get("metrics_availability") or {}
-    metrics_origin = DATA_STORE.get("metrics_origin") or {}
-    search_report_metrics = DATA_STORE.get("search_report_metrics") or {}
+    source = snapshot.get("source") or "excel"
+    metrics_availability = snapshot.get("metrics_availability") or {}
+    metrics_origin = snapshot.get("metrics_origin") or {}
+    search_report_metrics = snapshot.get("search_report_metrics") or {}
 
     # ===== ФИЛЬТРУЕМ ТОВАРЫ С ЗАКАЗАМИ (для расчета показателей) =====
     # Товары с заказами в текущем периоде
@@ -616,14 +1133,20 @@ async def get_dashboard_summary(product_ids: Optional[str] = None):
         },
         "funnel": funnel,
         "products_count": len(data),
+        "data_with_orders_count": len(data_with_orders),
         "products_with_orders": products_with_orders_count,
         "products_with_orders_prev": products_with_orders_count_prev,
-        "upload_date": DATA_STORE["upload_date"]
+        "upload_date": snapshot.get("upload_date")
     }
 
 
 @app.get("/api/dashboard/hits")
-async def get_hits(limit: int = 10, product_ids: Optional[str] = None):
+async def get_hits(
+    limit: int = 10,
+    product_ids: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
     """Топ товаров по выручке (хиты)"""
     if DATA_STORE["processed_data"] is None:
         raise HTTPException(status_code=404, detail="Данные не загружены")
@@ -855,6 +1378,13 @@ async def get_actions(product_ids: Optional[str] = None):
     return {"actions": actions}
 
 
+@app.get("/api/filter-options")
+async def get_filter_options():
+    if DATA_STORE["processed_data"] is None:
+        return {"products": []}
+    return {"products": get_filter_products()}
+
+
 class WBApiFetchRequest(BaseModel):
     wb_api_key: str
     date_from: str
@@ -863,9 +1393,50 @@ class WBApiFetchRequest(BaseModel):
     past_to: Optional[str] = None
 
 
+class UnitEconomicsRequest(BaseModel):
+    wb_api_key: str
+    date_from: str
+    date_to: str
+    product_id: str
+
+
 class AIAnalysisRequest(BaseModel):
     api_key: Optional[str] = None
     focus: Optional[str] = "general"  # general, hits, outsiders, matrix, actions
+
+
+@app.post("/api/unit-economics")
+async def get_unit_economics(request: UnitEconomicsRequest):
+    product_id = str(request.product_id or "").strip()
+    if not product_id:
+        raise HTTPException(status_code=400, detail="Не выбран товар.")
+
+    try:
+        payload = await get_unit_economics_payload(
+            api_key=request.wb_api_key,
+            date_from=request.date_from,
+            date_to=request.date_to,
+            product_id=product_id,
+        )
+        return payload
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except httpx.HTTPStatusError as exc:
+        log.warning("UE HTTP %s for %s: %s", exc.response.status_code, product_id, exc.request.url)
+        if exc.response.status_code == 401:
+            raise HTTPException(status_code=401, detail="WB API отклонил токен. Проверьте правильность ключа.")
+        if exc.response.status_code == 429:
+            raise HTTPException(status_code=429, detail="Превышен лимит запросов к WB API. Повторите через минуту.")
+        raise HTTPException(
+            status_code=502,
+            detail=f"WB API вернул {exc.response.status_code}. Возможно, сервер Wildberries недоступен.",
+        )
+    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        log.warning("UE network error for %s: %s", product_id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Не удалось подключиться к WB API. Сервер Wildberries недоступен — попробуйте позже.",
+        )
 
 
 # API key from environment variable
@@ -947,7 +1518,9 @@ async def fetch_from_wb(request: WBApiFetchRequest):
         DATA_STORE["raw_data"] = mapped
         DATA_STORE["processed_data"] = processed
         DATA_STORE["upload_date"] = datetime.now().isoformat()
+        DATA_STORE["unit_cache"] = {}
         DATA_STORE["source"] = "wb_api"
+        DATA_STORE["wb_api_key"] = request.wb_api_key
         DATA_STORE["search_report_metrics"] = search_report_metrics
         (
             DATA_STORE["metrics_availability"],
@@ -962,6 +1535,11 @@ async def fetch_from_wb(request: WBApiFetchRequest):
             "prev_from": periods["past_from"],
             "prev_to": periods["past_to"]
         }
+        DATA_STORE["dashboard_cache"] = {}
+        log.info(
+            "WB-FETCH: %d products (period %s — %s)",
+            len(processed), periods["current_from"], periods["current_to"],
+        )
 
         return {
             "success": True,
@@ -1135,7 +1713,35 @@ async def get_categories():
 @app.get("/health")
 async def health_check():
     """Проверка здоровья API"""
-    return {"status": "ok", "data_loaded": DATA_STORE["processed_data"] is not None}
+    period = DATA_STORE.get("period") or {}
+    return {
+        "status": "ok",
+        "data_loaded": DATA_STORE["processed_data"] is not None,
+        "source": DATA_STORE.get("source"),
+        "products_count": len(DATA_STORE.get("processed_data") or []),
+        "filename": DATA_STORE.get("filename"),
+        "period": period if period else None,
+    }
+
+
+@app.post("/api/reset")
+async def reset_data():
+    """Полный сброс DATA_STORE. Полезно после тестов или чтобы начать с нуля."""
+    DATA_STORE["raw_data"] = None
+    DATA_STORE["processed_data"] = None
+    DATA_STORE["upload_date"] = None
+    DATA_STORE["unit_cache"] = {}
+    DATA_STORE["commission_cache"] = {}
+    DATA_STORE["dashboard_cache"] = {}
+    DATA_STORE["source"] = None
+    DATA_STORE["wb_api_key"] = None
+    DATA_STORE["search_report_metrics"] = None
+    DATA_STORE["metrics_availability"] = None
+    DATA_STORE["metrics_origin"] = None
+    DATA_STORE["filename"] = None
+    DATA_STORE["period"] = None
+    log.info("RESET: DATA_STORE cleared")
+    return {"success": True, "message": "Все данные сброшены. Загрузите Excel или подтяните данные через WB API."}
 
 
 @app.get("/", response_class=HTMLResponse)

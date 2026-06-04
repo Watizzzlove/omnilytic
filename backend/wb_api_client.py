@@ -8,6 +8,8 @@ from typing import Optional
 
 
 WB_ANALYTICS_BASE = "https://seller-analytics-api.wildberries.ru"
+WB_FINANCE_BASE = "https://finance-api.wildberries.ru"
+WB_COMMON_BASE = "https://common-api.wildberries.ru"
 
 # Rate limit: 3 req/min for Personal token
 RATE_LIMIT_DELAY = 21  # seconds between paginated requests
@@ -234,6 +236,84 @@ async def fetch_search_report_overview(
         ),
         "open_card_dynamics": _safe_float(open_card.get("dynamics")),
     }
+
+
+async def fetch_sales_report_details_by_period(
+    api_key: str,
+    date_from: str,
+    date_to: str,
+    period: str = "daily",
+    fields: Optional[list[str]] = None,
+) -> list[dict]:
+    headers = {
+        "Authorization": api_key,
+        "Content-Type": "application/json",
+    }
+
+    all_rows: list[dict] = []
+    rrd_id = 0
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        while True:
+            payload: dict = {
+                "dateFrom": date_from,
+                "dateTo": date_to,
+                "limit": 100000,
+                "rrdId": rrd_id,
+                "period": period,
+            }
+            if fields:
+                payload["fields"] = fields
+
+            resp = await client.post(
+                f"{WB_FINANCE_BASE}/api/finance/v1/sales-reports/detailed",
+                headers=headers,
+                json=payload,
+            )
+
+            if resp.status_code == 204:
+                break
+
+            if resp.status_code == 429:
+                await asyncio.sleep(RATE_LIMIT_DELAY)
+                continue
+
+            resp.raise_for_status()
+            rows = resp.json() or []
+            if not rows:
+                break
+
+            all_rows.extend(rows)
+            last_rrd_id = rows[-1].get("rrdId")
+            if last_rrd_id is None or len(rows) < 100000:
+                break
+
+            rrd_id = last_rrd_id
+            await asyncio.sleep(RATE_LIMIT_DELAY)
+
+    return all_rows
+
+
+async def fetch_commission_tariffs(
+    api_key: str,
+    locale: str = "ru",
+) -> dict:
+    headers = {"Authorization": api_key}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        while True:
+            resp = await client.get(
+                f"{WB_COMMON_BASE}/api/v1/tariffs/commission",
+                headers=headers,
+                params={"locale": locale},
+            )
+
+            if resp.status_code == 429:
+                await asyncio.sleep(RATE_LIMIT_DELAY)
+                continue
+
+            resp.raise_for_status()
+            return resp.json()
 
 
 def map_api_to_internal(api_products: list[dict]) -> list[dict]:
