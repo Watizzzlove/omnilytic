@@ -371,6 +371,8 @@
     }
 
     async function loadUnitEconomicsPage() {
+        await loadFilterOptions();
+        console.log("[UE-PAGE] products=" + app.getProducts().length);
         app.renderUnitEconomicsPage();
         await Promise.all([
             loadUnitEconomics("ue_block1"),
@@ -412,6 +414,7 @@
         try {
             const response = await fetch(`${app.API_BASE}/health`);
             const data = await response.json();
+            await loadFilterOptions();
             if (data.data_loaded) {
                 await loadDashboard();
             }

@@ -110,7 +110,7 @@
                     </button>
                 `;
             }).join("")
-            : '<div class="product-dropdown-empty">Нет товаров</div>';
+            : '<div class="product-dropdown-empty">Нет загруженных товаров. Загрузите Excel или подтяните данные через WB API.</div>';
 
         return `
             <div class="product-dropdown" data-section="${sectionId}" data-single="${isSingle ? "true" : "false"}">
