@@ -32,12 +32,28 @@
             `;
         }
 
+        // Нормализуем доли: segment.pct — это % от выручки, и их сумма не равна 100%.
+        // Для conic-gradient пересчитываем каждый сегмент в долю от суммы всех сегментов,
+        // чтобы диаграмма всегда занимала ровно 360° и все сегменты были видны.
+        const totalShare = segments.reduce((sum, segment) => sum + Math.abs(segment.pct), 0);
+        if (!totalShare) {
+            return `
+                <div class="ue-empty">
+                    <div class="empty-state-title">Нет данных для диаграммы</div>
+                    <p>За выбранный период по товару нет затрат для отображения.</p>
+                </div>
+            `;
+        }
+
         let offset = 0;
-        const stops = segments.map((segment) => {
-            const start = offset;
-            offset += segment.pct;
-            return `${segment.color} ${start}% ${offset}%`;
-        }).join(", ");
+        const stops = segments
+            .filter((segment) => Math.abs(segment.pct) > 0)
+            .map((segment) => {
+                const share = (Math.abs(segment.pct) / totalShare) * 100;
+                const start = offset;
+                offset += share;
+                return `${segment.color} ${start.toFixed(2)}% ${Math.min(offset, 100).toFixed(2)}%`;
+            }).join(", ");
 
         return `
             <div class="ue-pie-block">
@@ -144,6 +160,7 @@
 
         if (sectionId === "ue_block1") {
             return `
+                ${payload.notice ? `<div class="ue-note">${app.cleanText(payload.notice)}</div>` : ""}
                 <div class="ue-layout">
                     <div class="ue-scales">
                         <div class="ue-overview">

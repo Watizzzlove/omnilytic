@@ -55,35 +55,6 @@
         });
     }
 
-    function initUploadZone() {
-        const uploadZone = document.getElementById("uploadZone");
-        const fileInput = document.getElementById("fileInput");
-        if (!uploadZone || !fileInput) return;
-
-        uploadZone.addEventListener("dragover", (event) => {
-            event.preventDefault();
-            uploadZone.classList.add("dragover");
-        });
-
-        uploadZone.addEventListener("dragleave", () => {
-            uploadZone.classList.remove("dragover");
-        });
-
-        uploadZone.addEventListener("drop", (event) => {
-            event.preventDefault();
-            uploadZone.classList.remove("dragover");
-            if (event.dataTransfer.files[0]) {
-                app.uploadFile(event.dataTransfer.files[0]);
-            }
-        });
-
-        fileInput.addEventListener("change", (event) => {
-            if (event.target.files[0]) {
-                app.uploadFile(event.target.files[0]);
-            }
-        });
-    }
-
     function initDateFilters() {
         const today = new Date();
         const weekAgo = new Date(today);
@@ -135,7 +106,10 @@
         const query = input.value.trim().toLowerCase();
         panel.querySelectorAll(".product-dropdown-item").forEach((item) => {
             const haystack = item.dataset.search || "";
-            item.hidden = Boolean(query) && !haystack.includes(query);
+            const shouldHide = Boolean(query) && !haystack.includes(query);
+            // Инлайновый display перебивает CSS-правило .product-dropdown-item { display: flex },
+            // из-за которого атрибут hidden не работал.
+            item.style.display = shouldHide ? "none" : "";
         });
     };
 
@@ -239,7 +213,7 @@
                 item.classList.toggle("selected", shouldSelect);
                 const check = item.querySelector(".checkmark");
                 if (check) check.textContent = shouldSelect ? "✓" : "";
-                item.hidden = false;
+                item.style.display = "";
             });
             const searchInput = container.querySelector(".product-dropdown-search input");
             if (searchInput) searchInput.value = "";
@@ -302,7 +276,6 @@
 
     function initialize() {
         initNavigation();
-        initUploadZone();
         initDateFilters();
         renderHeaderFilters();
         updateDropdownButtons();

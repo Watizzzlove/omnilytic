@@ -21,7 +21,7 @@
             const period = h && h.period;
             if (period && period.from && period.to) {
                 fileName.textContent = `${label} · ${period.from} — ${period.to}`;
-                fileName.title = `Источник: ${h.source || "?"}. Для Excel даты фильтра игнорируются — период зафиксирован в файле.`;
+                fileName.title = `Источник: ${h.source || "?"}`;
             } else {
                 fileName.textContent = label;
             }
@@ -111,31 +111,6 @@
 
     function getWbApiKey() {
         return document.getElementById("wbApiKey")?.value.trim() || "";
-    }
-
-    async function uploadFile(file) {
-        const formData = new FormData();
-        formData.append("file", file);
-
-        try {
-            const response = await fetch(`${app.API_BASE}/api/upload`, {
-                method: "POST",
-                body: formData,
-            });
-            const data = await response.json();
-
-            if (response.ok) {
-                updateFileInfo(`${data.products_count} товаров`);
-                await loadDashboard();
-                if (app.getCurrentPage() === "unit") {
-                    await loadUnitEconomicsPage();
-                }
-                return;
-            }
-            alert(`Ошибка: ${app.cleanText(data.detail)}`);
-        } catch (error) {
-            alert("Ошибка подключения к серверу.");
-        }
     }
 
     async function fetchFromWbApi() {
@@ -266,16 +241,14 @@
             " dates=" + JSON.stringify(generalDates),
         );
         try {
-            const [summaryResponse, hitsResponse, outsidersResponse, matrixResponse, actionsResponse] = await Promise.all([
+            const [summaryResponse, hitsResponse, outsidersResponse] = await Promise.all([
                 fetch(`${app.API_BASE}/api/dashboard/summary${summaryQuery}`),
                 fetch(`${app.API_BASE}/api/dashboard/hits${buildQuery({ limit: 10, ...productQuery, date_from: generalDates.from, date_to: generalDates.to })}`),
                 fetch(`${app.API_BASE}/api/dashboard/outsiders${buildQuery({ limit: 10, ...productQuery, date_from: generalDates.from, date_to: generalDates.to })}`),
-                fetch(`${app.API_BASE}/api/dashboard/matrix${productQuery}`),
-                fetch(`${app.API_BASE}/api/dashboard/actions${productQuery}`),
             ]);
 
-            if (!summaryResponse.ok || !hitsResponse.ok || !outsidersResponse.ok || !matrixResponse.ok || !actionsResponse.ok) {
-                const bad = [summaryResponse, hitsResponse, outsidersResponse, matrixResponse, actionsResponse].find((r) => !r.ok);
+            if (!summaryResponse.ok || !hitsResponse.ok || !outsidersResponse.ok) {
+                const bad = [summaryResponse, hitsResponse, outsidersResponse].find((r) => !r.ok);
                 console.warn(
                     "[DASH] backend returned " + (bad ? bad.status : "unknown") +
                     " for " + (bad ? bad.url : "") + " - keeping previous data",
@@ -283,12 +256,10 @@
                 return;
             }
 
-            const [summary, hits, outsiders, matrix, actions] = await Promise.all([
+            const [summary, hits, outsiders] = await Promise.all([
                 summaryResponse.json(),
                 hitsResponse.json(),
                 outsidersResponse.json(),
-                matrixResponse.json(),
-                actionsResponse.json(),
             ]);
 
             console.log(
@@ -302,9 +273,6 @@
                 summary,
                 hits: hits.hits,
                 outsiders: outsiders.outsiders,
-                matrix: matrix.matrix,
-                matrixRules: matrix.rules || null,
-                actions: actions.actions,
             });
 
             await loadFilterOptions();
@@ -435,7 +403,6 @@
         loadUnitEconomicsPage,
         resetData,
         toggleWbApiPanel,
-        uploadFile,
     });
 
     window.toggleWbApiPanel = toggleWbApiPanel;

@@ -32,10 +32,6 @@
                         <span class="status-dot"></span>
                         <span id="fileName"></span>
                     </div>
-                    <label class="upload-zone" id="uploadZone">
-                        <input type="file" accept=".xlsx,.xls" id="fileInput">
-                        <span>Загрузить Excel</span>
-                    </label>
                     <button type="button" class="wb-api-toggle" id="wbApiToggle" onclick="toggleWbApiPanel()">Загрузить API-токен</button>
                     <button type="button" class="reset-btn" id="resetBtn" onclick="resetData()">Сбросить данные</button>
                 </div>
@@ -63,7 +59,7 @@
                     <div class="empty-state">
                         <div class="empty-state-icon">OM</div>
                         <div class="empty-state-title">Загрузите данные</div>
-                        <p>Загрузите Excel или подтяните данные через WB API, чтобы заполнить командный центр.</p>
+                        <p>Подтяните данные через WB API, чтобы заполнить командный центр.</p>
                     </div>
                 </div>
             </section>
@@ -87,7 +83,6 @@
     <script defer src="static/js/state.js"></script>
     <script defer src="static/js/render-command.js"></script>
     <script defer src="static/js/render-unit-economics.js"></script>
-    <script defer src="static/js/export.js"></script>
     <script defer src="static/js/api.js"></script>
     <script defer src="static/js/main.js"></script>
 </body>

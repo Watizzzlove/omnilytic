@@ -8,14 +8,13 @@ logging.basicConfig(
 )
 log = logging.getLogger("omnilytic")
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
-import io
-import pandas as pd
 import json
+import math
 from typing import Optional
 import os
 import sys
@@ -67,67 +66,15 @@ DATA_STORE = {
     "wb_api_key": None,
 }
 
-# Маппинг колонок
-COLUMN_MAPPING = {
-    "Артикул продавца": "seller_article",
-    "Артикул WB": "wb_article",
-    "Название": "name",
-    "Предмет": "category",
-    "Бренд": "brand",
-    "Удаленный товар": "is_deleted",
-    "Рейтинг карточки": "card_rating",
-    "Рейтинг по отзывам": "review_rating",
-    "Показы": "impressions",
-    "Показы (предыдущий период)": "impressions_prev",
-    "CTR": "ctr",
-    "CTR (предыдущий период)": "ctr_prev",
-    "Переходы в карточку": "card_views",
-    "Переходы в карточку (предыдущий период)": "card_views_prev",
-    "Доля карточки в выручке": "revenue_share",
-    "Доля карточки в выручке (предыдущий период)": "revenue_share_prev",
-    "Положили в корзину": "add_to_cart",
-    "Положили в корзину (предыдущий период)": "add_to_cart_prev",
-    "Добавили в отложенные": "add_to_favorites",
-    "Добавили в отложенные (предыдущий период)": "add_to_favorites_prev",
-    "Заказали, шт": "orders_qty",
-    "Заказали, шт (предыдущий период)": "orders_qty_prev",
-    "Выкупили, шт": "purchased_qty",
-    "Выкупы, шт (предыдущий период)": "purchased_qty_prev",
-    "Отменили, шт": "cancelled_qty",
-    "Отменили, шт (предыдущий период)": "cancelled_qty_prev",
-    "Конверсия в корзину, %": "cart_conversion",
-    "Конверсия в корзину, % (предыдущий период)": "cart_conversion_prev",
-    "Конверсия в заказ, %": "order_conversion",
-    "Конверсия в заказ, % (предыдущий период)": "order_conversion_prev",
-    "Процент выкупа": "purchase_rate",
-    "Процент выкупа (предыдущий период)": "purchase_rate_prev",
-    "Заказали на сумму, ₽": "orders_value",
-    "Заказали на сумму, ₽ (предыдущий период)": "orders_value_prev",
-    "Динамика суммы заказов, ₽": "orders_dynamics",
-    "Выкупили на сумму, ₽": "purchased_value",
-    "Выкупили на сумму, ₽ (предыдущий период)": "purchased_value_prev",
-    "Отменили на сумму, ₽": "cancelled_value",
-    "Отменили на сумму, ₽ (предыдущий период)": "cancelled_value_prev",
-    "Средняя цена, ₽": "avg_price",
-    "Средняя цена, ₽ (предыдущий период)": "avg_price_prev",
-    "Среднее количество заказов в день, шт": "avg_daily_orders",
-    "Среднее количество заказов в день, шт (предыдущий период)": "avg_daily_orders_prev",
-    "Остатки склад ВБ, шт": "stock_wb",
-    "Остатки МП, шт": "stock_mp",
-    "Сумма остатков на складах, ₽": "stock_value",
-    "Среднее время доставки": "delivery_time",
-    "Среднее время доставки (предыдущий период)": "delivery_time_prev",
-    "Локальные заказы, %": "local_orders_pct",
-    "Локальные заказы, % (предыдущий период)": "local_orders_pct_prev",
-}
-
-
 def safe_float(value, default=0.0):
     """Безопасное преобразование в float"""
     try:
-        if pd.isna(value):
+        if value is None:
             return default
-        return float(value)
+        result = float(value)
+        if math.isnan(result):
+            return default
+        return result
     except (ValueError, TypeError):
         return default
 
@@ -135,9 +82,12 @@ def safe_float(value, default=0.0):
 def safe_int(value, default=0):
     """Безопасное преобразование в int"""
     try:
-        if pd.isna(value):
+        if value is None:
             return default
-        return int(float(value))
+        result = float(value)
+        if math.isnan(result):
+            return default
+        return int(result)
     except (ValueError, TypeError):
         return default
 
@@ -184,32 +134,6 @@ def build_percentage_metric(value, prev, available=True, reason=None, origin=Non
     if origin:
         metric["origin"] = origin
     return metric
-
-
-def build_metrics_meta_for_excel():
-    availability = {
-        "impressions": {"available": True, "reason": None},
-        "ctr": {"available": True, "reason": None},
-        "cart_conversion": {"available": True, "reason": None},
-        "order_conversion": {"available": True, "reason": None},
-        "purchase_rate": {"available": True, "reason": None},
-        "cancel_rate": {"available": True, "reason": None},
-    }
-    origin = {
-        "impressions": "excel",
-        "ctr": "excel",
-        "card_views": "excel",
-        "cart_conversion": "excel",
-        "order_conversion": "excel",
-        "purchase_rate": "excel",
-        "cancel_rate": "excel",
-        "revenue": "excel",
-        "orders": "excel",
-        "purchased_value": "excel",
-        "cancelled_value": "excel",
-        "avg_order_value": "excel",
-    }
-    return availability, origin
 
 
 def format_search_report_error(exc):
@@ -313,7 +237,7 @@ def find_product_record(product_id: str):
 def resolve_wb_product_id(product_id: str):
     """
     Map a product_id coming from the UI (which may be the seller's internal
-    SKU / 'Артикул продавца' from Excel) to a real WB nmId that the
+    SKU / 'Артикул продавца') to a real WB nmId that the
     /sales-reports/detailed endpoint can match on.
 
     Returns: dict { "input", "wb_id", "source", "seller_article", "wb_article",
@@ -573,11 +497,6 @@ async def get_unit_economics_payload(api_key: str, date_from: str, date_to: str,
                 f"В локальных данных для {product_id!r} не заполнен «Артикул WB» (nmId) — "
                 "WB API оперирует только реальными nmId, а не внутренним артикулом продавца."
             )
-        if DATA_STORE.get("source") == "excel":
-            hint_parts.append(
-                "Загружены Excel-данные — командный центр считается по локальному файлу, "
-                "а юнит-экономика всегда запрашивает WB API напрямую."
-            )
         if not rows:
             hint_parts.append(
                 "WB API не вернул строк за выбранный период. Проверьте, что период не старше 365 дней и не в будущем."
@@ -593,9 +512,38 @@ async def get_unit_economics_payload(api_key: str, date_from: str, date_to: str,
             ),
         )
     grouped_rows = group_report_rows_by_rr_date(matched_rows)
+    available_dates = sorted(grouped_rows.keys())
 
-    start_rows = grouped_rows.get(date_from, [])
-    end_rows = grouped_rows.get(date_to, [])
+    log.info(
+        "UE dates: requested %s — %s, rows on start=%d, rows on end=%d, available dates: %s",
+        date_from, date_to,
+        len(grouped_rows.get(date_from, [])),
+        len(grouped_rows.get(date_to, [])),
+        ", ".join(available_dates) or "—",
+    )
+
+    # Если на границах периода нет операций — берём ближайшие даты с данными.
+    start_date_used = date_from
+    end_date_used = date_to
+    if date_from not in grouped_rows and available_dates:
+        # ближайшая дата с данными после начала периода
+        start_date_used = available_dates[0]
+    if date_to not in grouped_rows and available_dates:
+        # идём назад от конца периода (актуально, когда date_to = сегодня)
+        earlier_dates = [d for d in available_dates if d <= date_to]
+        end_date_used = earlier_dates[-1] if earlier_dates else available_dates[-1]
+
+    notice = None
+    if start_date_used != date_from or end_date_used != date_to:
+        if start_date_used == end_date_used:
+            found_dates = start_date_used
+        else:
+            found_dates = f"{start_date_used} — {end_date_used}"
+        notice = f"Данные на указанные даты не найдены, есть данные на: {found_dates}"
+        log.info("UE dates: fallback %s — %s -> %s — %s", date_from, date_to, start_date_used, end_date_used)
+
+    start_rows = grouped_rows.get(start_date_used, [])
+    end_rows = grouped_rows.get(end_date_used, [])
 
     start_components = compute_unit_components(start_rows)
     end_components = compute_unit_components(end_rows)
@@ -612,14 +560,14 @@ async def get_unit_economics_payload(api_key: str, date_from: str, date_to: str,
         for meta in UNIT_SCALE_META
     ]
 
+    # Круговая диаграмма: все 8 компонентов затрат за период
+    # (без итоговой цены и суммы к перечислению — они итоговые, а не затраты).
     pie_segments = []
     period_revenue = safe_float(period_components.get("retail_price", 0))
     for meta in UNIT_SCALE_META:
-        if meta.get("is_summary"):
+        if meta.get("is_summary") or meta["key"] == "seller_payout":
             continue
         value = safe_float(period_components.get(meta["key"], 0))
-        if value <= 0:
-            continue
         pct = round((value / period_revenue) * 100, 2) if period_revenue else 0.0
         pie_segments.append({
             "key": meta["key"],
@@ -685,13 +633,14 @@ async def get_unit_economics_payload(api_key: str, date_from: str, date_to: str,
             "product_id": product_id,
         },
         "start_date": {
-            "date": date_from,
+            "date": start_date_used,
             "retail_price": start_components.get("retail_price", 0),
         },
         "end_date": {
-            "date": date_to,
+            "date": end_date_used,
             "retail_price": end_components.get("retail_price", 0),
         },
+        "notice": notice,
         "scales": scales,
         "pie": {
             "total_revenue": round(period_revenue, 2),
@@ -734,14 +683,8 @@ def classify_product(row):
         return "dog"  # Собаки
 
 
-def process_data(df):
-    """Обработка загруженных данных"""
-    # Переименовываем колонки
-    df_renamed = df.rename(columns=COLUMN_MAPPING)
-
-    # Добавляем расчетные поля
-    records = df_renamed.to_dict('records')
-
+def process_data(records):
+    """Добавляет вычисляемые поля к нормализованным записям"""
     for record in records:
         # Динамика показателей
         record['impressions_dynamics'] = calculate_dynamics(
@@ -770,11 +713,6 @@ def process_data(df):
             record['lost_revenue'] = 0
 
     return records
-
-
-def enrich_processed_records(records):
-    """Р”РѕР±Р°РІР»СЏРµС‚ РІС‹С‡РёСЃР»СЏРµРјС‹Рµ РїРѕР»СЏ Рє РЅРѕСЂРјР°Р»РёР·РѕРІР°РЅРЅС‹Рј Р·Р°РїРёСЃСЏРј."""
-    return process_data(pd.DataFrame.from_records(records).rename(columns={}))
 
 
 async def build_wb_dashboard_snapshot(api_key: str, date_from: str, date_to: str):
@@ -819,7 +757,7 @@ async def build_wb_dashboard_snapshot(api_key: str, date_from: str, date_to: str
     )
     snapshot = {
         "raw_data": mapped,
-        "processed_data": enrich_processed_records(mapped),
+        "processed_data": process_data(mapped),
         "upload_date": datetime.now().isoformat(),
         "period": {
             "from": periods["current_from"],
@@ -834,7 +772,7 @@ async def build_wb_dashboard_snapshot(api_key: str, date_from: str, date_to: str
     }
     DATA_STORE["dashboard_cache"][cache_key] = snapshot
     DATA_STORE["raw_data"] = mapped
-    DATA_STORE["processed_data"] = enrich_processed_records(mapped)
+    DATA_STORE["processed_data"] = process_data(mapped)
     DATA_STORE["period"] = snapshot["period"]
     DATA_STORE["upload_date"] = snapshot["upload_date"]
     DATA_STORE["search_report_metrics"] = search_report_metrics
@@ -869,51 +807,11 @@ async def get_dashboard_snapshot(
         "processed_data": DATA_STORE.get("processed_data"),
         "upload_date": DATA_STORE.get("upload_date"),
         "period": DATA_STORE.get("period"),
-        "source": DATA_STORE.get("source") or "excel",
+        "source": DATA_STORE.get("source") or "wb_api",
         "search_report_metrics": DATA_STORE.get("search_report_metrics") or {},
         "metrics_availability": DATA_STORE.get("metrics_availability") or {},
         "metrics_origin": DATA_STORE.get("metrics_origin") or {},
     }
-
-
-@app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
-    """Загрузка Excel файла с данными"""
-    if not file.filename.endswith(('.xlsx', '.xls')):
-        raise HTTPException(status_code=400, detail="Только Excel файлы (.xlsx, .xls)")
-
-    try:
-        # Читаем файл
-        contents = await file.read()
-        df = pd.read_excel(io.BytesIO(contents), sheet_name=0)
-
-        # Обрабатываем данные
-        processed = process_data(df)
-
-        # Сохраняем в хранилище
-        DATA_STORE["raw_data"] = df.to_dict('records')
-        DATA_STORE["processed_data"] = processed
-        DATA_STORE["upload_date"] = datetime.now().isoformat()
-        DATA_STORE["unit_cache"] = {}
-        DATA_STORE["dashboard_cache"] = {}
-        DATA_STORE["filename"] = file.filename
-        DATA_STORE["period"] = None
-        DATA_STORE["source"] = "excel"
-        DATA_STORE["wb_api_key"] = None
-        DATA_STORE["search_report_metrics"] = None
-        (
-            DATA_STORE["metrics_availability"],
-            DATA_STORE["metrics_origin"],
-        ) = build_metrics_meta_for_excel()
-
-        return {
-            "success": True,
-            "message": f"Загружено {len(processed)} товаров",
-            "products_count": len(processed),
-            "filename": file.filename
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка обработки файла: {str(e)}")
 
 
 def filter_products(data, product_ids_str):
@@ -940,12 +838,12 @@ async def get_dashboard_summary(
     if not snapshot.get("processed_data"):
         raise HTTPException(
             status_code=404,
-            detail="Нет данных. Сначала загрузите Excel или подтяните данные через WB API.",
+            detail="Нет данных. Подтяните данные через WB API.",
         )
 
     data = filter_products(snapshot["processed_data"], product_ids)
 
-    source = snapshot.get("source") or "excel"
+    source = snapshot.get("source") or "wb_api"
     metrics_availability = snapshot.get("metrics_availability") or {}
     metrics_origin = snapshot.get("metrics_origin") or {}
     search_report_metrics = snapshot.get("search_report_metrics") or {}
@@ -1005,20 +903,11 @@ async def get_dashboard_summary(
         ctr_open_card_prev = safe_int(
             search_report_metrics.get("previous", {}).get("open_card", 0)
         )
-    elif source == "wb_api":
+    else:
         total_impressions = total_card_views
         total_impressions_prev = total_card_views_prev
         ctr_open_card = 0
         ctr_open_card_prev = 0
-    else:
-        total_impressions = sum(
-            safe_int(r.get('impressions', 0)) for r in data_with_orders
-        )
-        total_impressions_prev = sum(
-            safe_int(r.get('impressions_prev', 0)) for r in data_with_orders_prev
-        )
-        ctr_open_card = total_card_views
-        ctr_open_card_prev = total_card_views_prev
 
     # Остатки - ПО ВСЕМ ТОВАРАМ (не фильтруем)
     total_stock_value = sum(safe_int(r.get('stock_value', 0)) for r in data)
@@ -1248,46 +1137,21 @@ async def get_outsiders(limit: int = 10, product_ids: Optional[str] = None):
         raise HTTPException(status_code=404, detail="Данные не загружены")
 
     data = filter_products(DATA_STORE["processed_data"], product_ids)
-    source = DATA_STORE.get("source") or "excel"
 
     outsiders = []
-    traffic_field = "card_views" if source == "wb_api" else "impressions"
-    traffic_label = "переходов" if traffic_field == "card_views" else "показов"
 
-    # Товары с нулевыми заказами но были показы
-    zero_orders = [r for r in data if safe_int(r.get('orders_qty', 0)) == 0 and safe_int(r.get(traffic_field, 0)) > 1000]
-    for item in sorted(zero_orders, key=lambda x: safe_int(x.get(traffic_field, 0)), reverse=True)[:limit//3]:
-        traffic_value = safe_int(item.get(traffic_field, 0))
+    # Товары с нулевыми заказами, но были переходы в карточку
+    zero_orders = [r for r in data if safe_int(r.get('orders_qty', 0)) == 0 and safe_int(r.get('card_views', 0)) > 1000]
+    for item in sorted(zero_orders, key=lambda x: safe_int(x.get('card_views', 0)), reverse=True)[:limit//3]:
         outsiders.append({
             "seller_article": item.get('seller_article'),
             "wb_article": item.get('wb_article'),
             "name": item.get('name', '')[:50],
             "issue": "Нет заказов",
-            "detail": f"{safe_int(item.get('impressions', 0)):,} показов",
+            "detail": f"{safe_int(item.get('card_views', 0)):,} переходов в карточку",
             "category": item.get('category'),
-            "recommendation": "Проверить цену и контент карточки"
+            "recommendation": "Проверьте цену, описание и содержание карточки"
         })
-        outsiders[-1]["issue"] = "Нет заказов"
-        outsiders[-1]["detail"] = (
-            f"{traffic_value:,} "
-            f"{'переходов в карточку' if traffic_field == 'card_views' else 'показов'}"
-        )
-        outsiders[-1]["recommendation"] = "Проверьте цену, описание и содержание карточки"
-
-    # Низкий CTR
-    low_ctr = [] if source == "wb_api" else [r for r in data if safe_float(r.get('ctr', 0)) < 1 and safe_int(r.get('impressions', 0)) > 5000]
-    for item in sorted(low_ctr, key=lambda x: safe_int(x.get('impressions', 0)), reverse=True)[:limit//3]:
-        outsiders.append({
-            "seller_article": item.get('seller_article'),
-            "wb_article": item.get('wb_article'),
-            "name": item.get('name', '')[:50],
-            "issue": "Низкий CTR",
-            "detail": f"CTR {safe_float(item.get('ctr', 0)):.1f}%",
-            "category": item.get('category'),
-            "recommendation": "Улучшить главное фото"
-        })
-        outsiders[-1]["issue"] = "Низкий CTR"
-        outsiders[-1]["recommendation"] = "Улучшите главное фото и первые элементы карточки"
 
     # Низкий процент выкупа
     low_purchase = [r for r in data if safe_int(r.get('purchase_rate', 0)) < 30 and safe_int(r.get('orders_qty', 0)) > 10]
@@ -1306,144 +1170,6 @@ async def get_outsiders(limit: int = 10, product_ids: Optional[str] = None):
         outsiders[-1]["recommendation"] = "Проверьте качество товара, упаковку и описание ожиданий"
 
     return {"outsiders": outsiders[:limit]}
-
-
-@app.get("/api/dashboard/matrix")
-async def get_bcg_matrix(product_ids: Optional[str] = None):
-    """BCG-матрица товаров"""
-    if DATA_STORE["processed_data"] is None:
-        raise HTTPException(status_code=404, detail="Данные не загружены")
-
-    data = filter_products(DATA_STORE["processed_data"], product_ids)
-
-    matrix = {
-        "star": {"count": 0, "revenue": 0, "items": []},
-        "question": {"count": 0, "revenue": 0, "items": []},
-        "cash_cow": {"count": 0, "revenue": 0, "items": []},
-        "dog": {"count": 0, "revenue": 0, "items": []}
-    }
-
-    for item in data:
-        category = item.get('bcg_category', 'dog')
-        revenue = safe_int(item.get('orders_value', 0))
-
-        matrix[category]["count"] += 1
-        matrix[category]["revenue"] += revenue
-
-        # Добавляем все товары для возможности экспорта
-        matrix[category]["items"].append({
-            "seller_article": item.get('seller_article'),
-            "wb_article": item.get('wb_article'),
-            "name": item.get('name', '')[:40],
-            "orders_value": revenue,
-            "orders_qty": safe_int(item.get('orders_qty', 0)),
-            "dynamics": item.get('revenue_dynamics_pct', 0),
-            "stock": item.get('total_stock', 0)
-        })
-
-    # Сортируем товары в каждой категории по выручке
-    for cat in matrix:
-        matrix[cat]["items"] = sorted(matrix[cat]["items"], key=lambda x: x['orders_value'], reverse=True)
-
-    return {
-        "matrix": matrix,
-        "rules": {
-            "growth_threshold_pct": 10,
-            "revenue_threshold": 10000,
-        },
-    }
-
-
-@app.get("/api/dashboard/actions")
-async def get_actions(product_ids: Optional[str] = None):
-    """Рекомендуемые действия"""
-    if DATA_STORE["processed_data"] is None:
-        raise HTTPException(status_code=404, detail="Данные не загружены")
-
-    data = filter_products(DATA_STORE["processed_data"], product_ids)
-    source = DATA_STORE.get("source") or "excel"
-    traffic_field = "card_views" if source == "wb_api" else "impressions"
-
-    actions = {
-        "critical": [],
-        "important": [],
-        "opportunities": []
-    }
-
-    def format_items(items_list):
-        """Форматирование списка товаров для экспорта"""
-        return [{
-            "seller_article": r.get('seller_article'),
-            "wb_article": r.get('wb_article'),
-            "name": r.get('name', '')[:50],
-            "orders_value": safe_int(r.get('orders_value', 0)),
-            "dynamics": r.get('revenue_dynamics_pct', 0)
-        } for r in items_list]
-
-    # КРИТИЧНО: Out of stock с продажами в прошлом периоде
-    oos_items = [r for r in data if r.get('total_stock', 0) == 0 and safe_int(r.get('orders_value_prev', 0)) > 5000]
-    if oos_items:
-        total_lost = sum(safe_int(r.get('orders_value_prev', 0)) for r in oos_items)
-        actions["critical"].append({
-            "title": f"Пополнить {len(oos_items)} SKU на складе",
-            "description": f"Товары с нулевым остатком, продавались на {total_lost:,}₽/нед",
-            "potential": total_lost,
-            "items_count": len(oos_items),
-            "items": format_items(oos_items)
-        })
-
-    # КРИТИЧНО: Сильное падение продаж
-    falling = [r for r in data if r.get('revenue_dynamics_pct', 0) < -30 and safe_int(r.get('orders_value_prev', 0)) > 10000]
-    if falling:
-        actions["critical"].append({
-            "title": f"Проанализировать падение {len(falling)} товаров",
-            "description": "Падение выручки более 30% неделя к неделе",
-            "potential": sum(safe_int(r.get('orders_value_prev', 0)) - safe_int(r.get('orders_value', 0)) for r in falling),
-            "items_count": len(falling),
-            "items": format_items(falling)
-        })
-
-    # ВАЖНО: Низкий рейтинг карточки
-    low_rating = [r for r in data if safe_float(r.get('card_rating', 10)) < 5 and safe_int(r.get(traffic_field, 0)) > 1000]
-    if low_rating:
-        actions["important"].append({
-            "title": f"Улучшить {len(low_rating)} карточек с низким рейтингом",
-            "description": "Рейтинг карточки ниже 5, влияет на показы",
-            "items_count": len(low_rating),
-            "items": format_items(low_rating)
-        })
-
-    # ВАЖНО: Высокий CTR, но низкая конверсия
-    high_ctr_low_conv = [] if source == "wb_api" else [r for r in data if safe_float(r.get('ctr', 0)) > 5 and safe_float(r.get('order_conversion', 0)) < 2]
-    if high_ctr_low_conv:
-        actions["important"].append({
-            "title": f"Оптимизировать цену для {len(high_ctr_low_conv)} товаров",
-            "description": "Хороший CTR, но низкая конверсия - проблема в цене/описании",
-            "items_count": len(high_ctr_low_conv),
-            "items": format_items(high_ctr_low_conv)
-        })
-
-    # ВОЗМОЖНОСТИ: Звёзды с низкими остатками
-    stars_low_stock = [r for r in data if r.get('bcg_category') == 'star' and r.get('total_stock', 0) < 50]
-    if stars_low_stock:
-        actions["opportunities"].append({
-            "title": f"Увеличить остатки {len(stars_low_stock)} звёзд",
-            "description": "Хиты продаж с остатком менее 50шт - риск OOS",
-            "items_count": len(stars_low_stock),
-            "items": format_items(stars_low_stock)
-        })
-
-    # ВОЗМОЖНОСТИ: Вопросы для тестирования
-    questions = [r for r in data if r.get('bcg_category') == 'question']
-    if questions:
-        actions["opportunities"].append({
-            "title": f"A/B тест цен для {len(questions)} товаров-вопросов",
-            "description": "Растущие товары с потенциалом роста продаж",
-            "items_count": len(questions),
-            "items": format_items(questions)
-        })
-
-    return {"actions": actions}
 
 
 @app.get("/api/filter-options")
@@ -1470,7 +1196,7 @@ class UnitEconomicsRequest(BaseModel):
 
 class AIAnalysisRequest(BaseModel):
     api_key: Optional[str] = None
-    focus: Optional[str] = "general"  # general, hits, outsiders, matrix, actions
+    focus: Optional[str] = "general"  # general, hits, outsiders
 
 
 @app.post("/api/unit-economics")
@@ -1809,7 +1535,7 @@ async def reset_data():
     DATA_STORE["filename"] = None
     DATA_STORE["period"] = None
     log.info("RESET: DATA_STORE cleared")
-    return {"success": True, "message": "Все данные сброшены. Загрузите Excel или подтяните данные через WB API."}
+    return {"success": True, "message": "Все данные сброшены. Подтяните данные через WB API."}
 
 
 @app.get("/", response_class=HTMLResponse)

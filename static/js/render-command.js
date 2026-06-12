@@ -110,7 +110,7 @@
                     </button>
                 `;
             }).join("")
-            : '<div class="product-dropdown-empty">Нет загруженных товаров. Загрузите Excel или подтяните данные через WB API.</div>';
+            : '<div class="product-dropdown-empty">Нет загруженных товаров. Подтяните данные через WB API.</div>';
 
         return `
             <div class="product-dropdown" data-section="${sectionId}" data-single="${isSingle ? "true" : "false"}">
@@ -249,7 +249,7 @@
 
     function renderOutsidersTable(outsiders) {
         if (!outsiders?.length) return '<p class="muted">Проблемных товаров не найдено</p>';
-        const badgeClass = { "Нет заказов": "badge-danger", "Низкий CTR": "badge-warning", "Низкий выкуп": "badge-warning" };
+        const badgeClass = { "Нет заказов": "badge-danger", "Низкий выкуп": "badge-warning" };
         return `<table><thead><tr><th>Артикул / товар</th><th>Проблема</th><th>Рекомендация</th></tr></thead>
             <tbody>${outsiders.map((item) => `<tr>
                 <td><div class="table-code">${item.seller_article || item.wb_article || "-"}</div><div class="table-title">${app.cleanText(item.name)}</div><div class="table-note">${app.cleanText(item.detail)}</div></td>
@@ -269,7 +269,7 @@
                     <div class="empty-state-title">${data.products_count ? "Нет данных по выбранным товарам" : "Загрузите данные"}</div>
                     <p>${data.products_count
                         ? "Выбранные товары не содержат заказов за указанный период. Попробуйте сбросить фильтр или выбрать другой период."
-                        : "Загрузите Excel или подтяните данные через WB API, чтобы заполнить командный центр."}</p>
+                        : "Подтяните данные через WB API, чтобы заполнить командный центр."}</p>
                 </div>
             `;
             return;
