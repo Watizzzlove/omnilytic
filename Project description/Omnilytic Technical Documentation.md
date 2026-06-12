@@ -415,8 +415,6 @@ uvicorn main:app --host 0.0.0.0 --port 8001 --reload
 
 ## Раздел 2. Логическое и техническое описание процессов
 
-Для каждого модуля: **что делает → как работает → реализация в коде (файл:строка → строка)**.
-
 ### 2.1 DATA_STORE — единое хранилище состояния
 
 **Что:** глобальный словарь Python, хранящий все данные приложения. Живёт в памяти процесса uvicorn.
@@ -440,637 +438,187 @@ DATA_STORE = {
 }
 ```
 
-**Как очищается:** `reset_data()` (`main.py:1795-1810`) — обнуляет все поля. Также очищается при загрузке новых данных (Excel или WB API): `unit_cache = {}`, `dashboard_cache = {}`.
-
 ### 2.2 COLUMN_MAPPING — маппинг Excel → internal
 
-**Что:** словарь соответствия русских заголовков колонок Excel → внутренние ключи (английские). Определён как константа на уровне модуля (`main.py:63-122`). 47 записей:
+**Что:** словарь соответствия русских заголовков колонок Excel → внутренние ключи (английские). 47 записей.
 
-| Русская колонка | Internal key |
-|---|---|
-| Артикул продавца | `seller_article` |
-| Артикул WB | `wb_article` |
-| Название | `name` |
-| Предмет | `category` |
-| Бренд | `brand` |
-| Удаленный товар | `is_deleted` |
-| Рейтинг карточки | `card_rating` |
-| Рейтинг по отзывам | `review_rating` |
-| Показы | `impressions` |
-| Показы (пред. период) | `impressions_prev` |
-| CTR | `ctr` |
-| CTR (пред. период) | `ctr_prev` |
-| Переходы в карточку | `card_views` |
-| Переходы в карточку (пред. период) | `card_views_prev` |
-| Доля карточки в выручке | `revenue_share` |
-| Доля карточки в выручке (пред. период) | `revenue_share_prev` |
-| Положили в корзину | `add_to_cart` |
-| Положили в корзину (пред. период) | `add_to_cart_prev` |
-| Добавили в отложенные | `add_to_favorites` |
-| Добавили в отложенные (пред. период) | `add_to_favorites_prev` |
-| Заказали, шт | `orders_qty` |
-| Заказали, шт (пред. период) | `orders_qty_prev` |
-| Выкупили, шт | `purchased_qty` |
-| Выкупы, шт (пред. период) | `purchased_qty_prev` |
-| Отменили, шт | `cancelled_qty` |
-| Отменили, шт (пред. период) | `cancelled_qty_prev` |
-| Конверсия в корзину, % | `cart_conversion` |
-| Конверсия в корзину, % (пред. период) | `cart_conversion_prev` |
-| Конверсия в заказ, % | `order_conversion` |
-| Конверсия в заказ, % (пред. период) | `order_conversion_prev` |
-| Процент выкупа | `purchase_rate` |
-| Процент выкупа (пред. период) | `purchase_rate_prev` |
-| Заказали на сумму, ₽ | `orders_value` |
-| Заказали на сумму, ₽ (пред. период) | `orders_value_prev` |
-| Динамика суммы заказов, ₽ | `orders_dynamics` |
-| Выкупили на сумму, ₽ | `purchased_value` |
-| Выкупили на сумму, ₽ (пред. период) | `purchased_value_prev` |
-| Отменили на сумму, ₽ | `cancelled_value` |
-| Отменили на сумму, ₽ (пред. период) | `cancelled_value_prev` |
-| Средняя цена, ₽ | `avg_price` |
-| Средняя цена, ₽ (пред. период) | `avg_price_prev` |
-| Среднее количество заказов в день, шт | `avg_daily_orders` |
-| Среднее количество заказов в день, шт (пред. период) | `avg_daily_orders_prev` |
-| Остатки склад ВБ, шт | `stock_wb` |
-| Остатки МП, шт | `stock_mp` |
-| Сумма остатков на складах, ₽ | `stock_value` |
-| Среднее время доставки | `delivery_time` |
-| Среднее время доставки (пред. период) | `delivery_time_prev` |
-| Локальные заказы, % | `local_orders_pct` |
-| Локальные заказы, % (пред. период) | `local_orders_pct_prev` |
+**Как применяется:** `upload_file()` → `pd.read_excel()` → `df.rename(columns=COLUMN_MAPPING)`.
 
-**Как применяется:** при загрузке Excel `upload_file()` → `pd.read_excel()` → `df.rename(columns=COLUMN_MAPPING)`. После rename остаются только те колонки, которые есть в mapping. Лишние колонки из Excel отбрасываются.
-
-**Для WB API:** маппинг не используется — `map_api_to_internal()` (`wb_api_client.py`) сразу формирует dict с ключами: `seller_article = product.vendorCode`, `wb_article = product.nmId` (int).
+**Для WB API:** маппинг не используется — `map_api_to_internal()` сразу формирует dict с ключами: `seller_article`, `wb_article` и т.д.
 
 ### 2.3 safe_float / safe_int — защитное приведение типов
 
-**Что:** обёртки для безопасного преобразования значений в числа. Возвращают 0 (или значение по умолчанию) при NaN, None, ошибке.
-
-**Код:** `safe_float(value, default=0.0)` и `safe_int(value, default=0)` (`main.py:125-142`).
-
-Используются во всех вычислениях: KPI, компоненты UE, BCG-классификация, сумма выручки и т.д.
+Используются во всех вычислениях: KPI, компоненты UE, BCG-классификация. Возвращают 0 при NaN/None/ошибке.
 
 ### 2.4 resolve_wb_product_id — поиск товара в DATA_STORE
 
-**Что:** подмена артикула из UI (может быть seller_article, wb_article или произвольная строка) на реальный nmId для запроса к WB API.
-
 **Логика:**
-1. Приходит `product_id` из дропдауна UI
-2. Ищем товар в `DATA_STORE["processed_data"]` через `find_product_record()` (`main.py:304-310`) — проход по всем записям, сравнение `product_id` с `seller_article` и `wb_article`
-3. Если товар найден:
-   - Если есть `wb_article` → используем его (приоритет: wb_article)
-   - Если нет wb_article, но есть seller_article → используем seller_article
-4. Если товар не найден → возвращаем переданную строку как есть (`source="as_is"`)
-5. NaN/None/null/none → пустая строка (`_normalize()`, `main.py:340-344`)
+1. `find_product_record(product_id)` — проход по `processed_data`, сравнение `product_id` с `seller_article` и `wb_article`
+2. Если найден → приоритет: `wb_article` > `seller_article` > `as_is`
+3. NaN/None/null/none → пустая строка
 
-**Код:** `resolve_wb_product_id()` (`main.py:313-361`). Возвращает словарь:
-```python
-{
-    "input": product_id,        # что пришло
-    "wb_id": wb_id,            # что будет отправлено в WB API
-    "source": "wb_article"     # откуда взяли: wb_article | seller_article | as_is
-       | "seller_article"
-       | "as_is",
-    "seller_article": "...",   # найденный seller_article
-    "wb_article": "...",       # найденный wb_article
-    "name": "...",             # название товара
-    "matched": True|False      # найден ли в DATA_STORE
-}
-```
-
-**Логирование:** `UE resolve: input='123' -> wb_id='456' (source=wb_article, seller='123', wb='456')`.
+**Возвращает:** `{input, wb_id, source, seller_article, wb_article, name, matched}`.
 
 ### 2.5 Загрузка через WB API
 
-**Что:** получение данных из Wildberries API вместо Excel.
-
-**Логика:**
-1. `resolve_periods()` (`wb_api_client.py`) — валидация дат (from ≤ to, max 365 дней, не в будущем). Если `past_from/past_to` не указаны — рассчитывает предыдущий период равной длины
-2. `fetch_sales_funnel()` — POST к `/analytics/v3/sales-funnel/products`
-   - Пагинация: страницы по 1000 товаров, курсор `last_id`
-   - Rate limit: при 429 → пауза 21 секунда (глобальный `asyncio.Lock`)
-3. `map_api_to_internal()` — маппинг полей API: `vendorCode → seller_article`, `nmId → wb_article`, и т.д.
+**Последовательность:**
+1. `resolve_periods()` — валидация дат, расчёт предыдущего периода
+2. `fetch_sales_funnel()` — POST к `/analytics/v3/sales-funnel/products`, пагинация 1000, rate limit 21s
+3. `map_api_to_internal()` — маппинг полей API
 4. `fetch_search_report_overview()` (опционально) — POST к `/v2/search-report/report`
-   - Если упало → мягкая ошибка, метрики помечаются как недоступные
-   - `format_search_report_error()` — дифференцированное сообщение для 401/403, 429
-5. `process_data()` — enrich: динамика (`orders_dynamics_pct`, `revenue_dynamics_pct`), BCG-классификация, `total_stock`, `lost_revenue`
-6. Сохранение в DATA_STORE, очистка кэшей
+5. `process_data()` — enrich (динамика, BCG, stock, lost_revenue)
 
-**Код:** `fetch_from_wb()` (`main.py:1514-1647`). Обработка ошибок:
-- `ValueError` → 400 Bad Request
-- `httpx.HTTPStatusError` → маппинг (401→токен, 429→лимит, остальные→502)
-- `httpx.ConnectError`/`TimeoutException` → 503 Сервис недоступен
-- `HTTPException` → проброс
+**Обработка ошибок:** ValueError→400, httpx.HTTPStatusError→маппинг (401, 429, 502), ConnectError→503.
 
 ### 2.6 Загрузка Excel
 
-**Что:** чтение Excel-файла стандартного отчёта WB.
-
-**Логика:**
-1. Multipart file upload → `pd.read_excel(io.BytesIO(contents))`
-2. `df.rename(columns=COLUMN_MAPPING)` — переименование колонок
-3. `process_data(df)` (`main.py:733-780`) — enrich:
-   - Динамика: `calculate_dynamics(current, prev)` для orders_qty, orders_value, impressions, card_views
-   - `classify_product()` → `bcg_category` (star/question/cash_cow/dog)
-   - `total_stock = stock_wb + stock_mp`
-   - `lost_revenue`: если `total_stock=0` и были продажи в prev → упущенная выручка
-4. `build_metrics_meta_for_excel()` — отмечает, какие метрики доступны
-
-**Код:** `upload_file()` (`main.py:830-920`). Очищает `unit_cache` и `dashboard_cache`.
+**Последовательность:**
+1. Multipart → `pd.read_excel(io.BytesIO(contents))`
+2. `df.rename(columns=COLUMN_MAPPING)`
+3. `process_data(df)` — enrich
+4. `build_metrics_meta_for_excel()`
 
 ### 2.7 Командный центр — KPI и воронка
 
-**Что:** основная страница, 5 параллельных запросов к API.
+**Фронтенд:** `loadDashboard()` → `Promise.all([5×GET])` → `setDashboardData()` → `renderCommandCenter()`.
 
-**Логика (фронтенд** — `api.js:277-320`):
-1. `loadDashboard()` → `Promise.all([5×GET])`:
-   - `GET /api/dashboard/summary?product_ids=...&date_from=...&date_to=...`
-   - `GET /api/dashboard/hits?limit=10&product_ids=...`
-   - `GET /api/dashboard/outsiders?limit=10&product_ids=...`
-   - `GET /api/dashboard/matrix?product_ids=...`
-   - `GET /api/dashboard/actions?product_ids=...`
-2. Если любой ответ не `ok` → return без обновления данных
-3. `app.setDashboardData({summary, hits, outsiders, matrix, matrixRules, actions})`
-4. Проверка stale IDs в `productFilters.general` → сброс если нужно
-5. `app.renderCommandCenter()` → рендер HTML
-
-**Логика (бэкенд)** — `get_dashboard_summary()` (`main.py:1090-1208`):
-1. **`get_dashboard_snapshot()`** (`main.py:850-1000`):
-   - Если `source=wb_api` + даты заданы + ключ есть → `build_wb_dashboard_snapshot()` (перестраивает данные через WB API Sales Funnel)
-   - Иначе → фильтрует `DATA_STORE["processed_data"]` по `product_ids` (csv → список) и датам (фильтр по диапазону `period.from` / `period.to`)
-2. **Агрегация:**
-   - Суммы: `revenue = sum(orders_value)`, `orders = sum(orders_qty)`, `purchased = sum(purchased_qty)`
-   - Средневзвешенные: `avg_price = revenue / orders`, `purchase_rate = purchased / orders * 100`, `cancel_rate = cancelled / orders * 100`
-3. **Конверсии:** `cart_rate = add_to_cart / card_views * 100`, `order_rate = orders / add_to_cart * 100`
-4. **Форматирование:** `build_absolute_metric(value, prev)` / `build_percentage_metric(value, prev)` — создают KPI-объект с `{value, prev, dynamics, diff, available, reason}`
+**Бэкенд:** `get_dashboard_snapshot()` → фильтрация по product_ids и датам → агрегация (суммы, средневзвешенные, конверсии) → `build_absolute_metric()` / `build_percentage_metric()`.
 
 ### 2.8 BCG-классификация
 
-**Что:** каждый товар классифицируется в один из 4 квадрантов.
-
-**Логика:**
-- `high_dynamics = orders_dynamics > 10%`
-- `high_sales = orders_value > 10 000 ₽`
-
 | Динамика >10% | Продажи >10000₽ | Класс |
 |---|---|---|
-| Да | Да | `star` |
-| Да | Нет | `question` |
-| Нет | Да | `cash_cow` |
-| Нет | Нет | `dog` |
-
-**Код:** `classify_product()` (`main.py:715-730`). Пороги жёстко заданы (не настраиваются).
+| Да | Да | star |
+| Да | Нет | question |
+| Нет | Да | cash_cow |
+| Нет | Нет | dog |
 
 ### 2.9 Юнит-экономика — полный поток
 
-**Что:** расчёт структуры затрат по одному товару через WB API.
-
-**Шаг 1 — resolve ID** (`get_unit_economics_payload()`, `main.py:529-535`):
-```python
-resolution = resolve_wb_product_id(product_id)
-wb_product_id = resolution["wb_id"]
-```
-
-Если товар не найден в DATA_STORE → `source="as_is"`, WB API будет искать по введённой строке как есть.
-
-**Шаг 2 — запрос к WB API** (`main.py:557-563`):
-```python
-rows = await fetch_sales_report_details_by_period(
-    api_key=api_key, date_from=date_from, date_to=date_to,
-    period="daily", fields=[...]
-)
-```
-- URL: `POST /api/finance/v1/sales-reports/detailed`
-- Пагинация: курсор `rrdId`, лимит 100000 строк
-- Поля: rrdId, nmId, vendorCode, title, subjectName, rrDate, saleDt, deliveryMethod, retailPriceWithDisc, ppvzSalesCommission, acquiringFee, rebillLogisticCost, paidStorage, penalty, deduction, additionalPayment, paidAcceptance
-
-**Шаг 3 — фильтр совпадений** (`main.py:564`):
-```python
-matched_rows = [row for row in rows if match_report_row_to_product(row, wb_product_id)]
-```
-
-`match_report_row_to_product()` (`main.py:397-402`) — сравнивает `product_id` с `vendorCode` или `nmId` строки отчёта.
-
-Если `matched_rows` пустой → **HTTP 404 с подсказкой**:
-- Если товар не найден в DATA_STORE → сообщение про пустой «Артикул WB»
-- Если источник Excel → сообщение, что UE всегда работает через WB API
-- Если WB API не вернул строк → сообщение про 365 дней
-
-**Шаг 4 — группировка по датам** (`main.py:595-601`):
-```python
-grouped_rows = group_report_rows_by_rr_date(matched_rows)  # main.py:387-394
-start_rows = grouped_rows.get(date_from, [])   # ТОЛЬКО date_from
-end_rows = grouped_rows.get(date_to, [])       # ТОЛЬКО date_to
-```
-
-**⚠️ ЭТО МЕСТО БАГА:** данные берутся строго за одну дату. Если в `date_from` не было операций → `start_rows = []` → start_components = 0 → левый сегмент шкалы нулевой.
-
-**Исправление:**
-1. Проверить, есть ли данные на `date_from` и `date_to` (по отдельности и вместе)
-2. Записать в лог результат проверки
-3. Если на `date_from` данных нет — найти ближайшую дату С данными (идти вперёд от `date_from`)
-4. Если на `date_to` данных нет:
-   - Если `date_to` = сегодня — идти вниз (к более ранним датам)
-   - Иначе — идти вниз от `date_to` к ближайшей дате с данными
-5. Вернуть пользователю: «Данные на указанные даты не найдены, есть данные на: YYYY-MM-DD»
-
-**Шаг 5 — расчёт компонентов** (`main.py:600-602`):
-```python
-start_components = compute_unit_components(start_rows)
-end_components = compute_unit_components(end_rows)
-period_components = compute_unit_components(matched_rows)
-```
-
-`compute_unit_components()` (`main.py:405-439`):
-```python
-retail_price = sum(retailPriceWithDisc)
-commission = sum(ppvzSalesCommission)
-logistics = sum(rebillLogisticCost)
-storage = sum(paidStorage)
-acquiring = sum(acquiringFee)
-penalties = sum(penalty)
-acceptance = sum(paidAcceptance)
-deductions = sum(deduction)
-additional_payments = sum(additionalPayment)
-seller_payout = retail_price - commission - logistics - storage
-               - acquiring - penalties - acceptance
-               - deductions - additional_payments
-```
-
-**Шаг 6 — шкалы** (`main.py:610-613`):
-```python
-scales = [build_scale_item(meta, start_components, end_components)
-          for meta in UNIT_SCALE_META]
-```
-
-`UNIT_SCALE_META` (`main.py:264-275`):
-```python
-[
-    {"key": "retail_price", "label": "Итоговая цена", "color": "#111111", "is_summary": True},
-    {"key": "commission", "label": "Комиссия WB", "color": "#1f1d3d"},
-    {"key": "logistics", "label": "Логистика", "color": "#d98c10"},
-    {"key": "storage", "label": "Хранение", "color": "#8c6a3c"},
-    {"key": "acquiring", "label": "Эквайринг", "color": "#0b7285"},
-    {"key": "penalties", "label": "Штрафы", "color": "#d8373a"},
-    {"key": "acceptance", "label": "Приемка", "color": "#7c4dff"},
-    {"key": "deductions", "label": "Удержания", "color": "#9c36b5"},
-    {"key": "additional_payments", "label": "Доплаты", "color": "#ff7b00"},
-    {"key": "seller_payout", "label": "К перечислению продавцу", "color": "#1ea64a"},
-]
-```
-
-`build_scale_item()` (`main.py:442-467`):
-- `start_pct = start_value / start_revenue * 100`
-- `end_pct = end_value / end_revenue * 100`
-- `total_pct = abs(start_pct) + abs(end_pct)`
-- `start.width = abs(start_pct) / total_pct`
-- `end.width = abs(end_pct) / total_pct`
-
-**Шаг 7 — круговая диаграмма** (`main.py:615-630`):
-- Без `is_summary` (retail_price, seller_payout исключены)
-- Каждый компонент → `{key, label, value, pct, color}`
-- Сегменты с нулевым `value` исключаются
-
-**Шаг 8 — комиссионные тарифы** (`main.py:632-666`):
-1. `get_commission_tariffs_cached(api_key)` — GET к `/api/v1/tariffs/commission`, кэш по `api_key`
-2. `resolve_standard_commission_rate(payload, subject_name, delivery_method)` — поиск ставки:
-   - Матчинг по `subjectName` (категория товара)
-   - Если FBS/DBS → `kgvpSupplier`
-   - Иначе → `kgvpMarketplace`
-3. `build_tariff_actual_row(key, kind, components)` — фактические ставки из start/end
-4. `build_tariff_change(kind, start, end)` — изменение: для pct → разница в п.п., для rub → процент изменения
-
-**Шаг 9 — ответ** (`main.py:669-711`):
-```python
-payload = {
-    "product": {"id", "name", "subject_name", "seller_article", "wb_article", "label"},
-    "filters": {"date_from", "date_to", "product_id"},
-    "start_date": {"date": date_from, "retail_price": ...},
-    "end_date": {"date": date_to, "retail_price": ...},
-    "scales": [...],  # 10 элементов
-    "pie": {"total_revenue": ..., "product_breakdown": [...], "segments": [...]},
-    "tariffs": {"rows": [...], "standard_note": "..."},
-}
-```
-
-Кэшируется в `DATA_STORE["unit_cache"][cache_key]`.
+1. **resolve ID** — `resolve_wb_product_id(product_id)` → `wb_id`
+2. **fetch** — POST `/api/finance/v1/sales-reports/detailed`, пагинация rrdId
+3. **filter** — `match_report_row_to_product(row, wb_id)` → `matched_rows`
+4. **group** — `group_report_rows_by_rr_date(matched_rows)` → `start_rows`/`end_rows` (по date_from/date_to)
+5. **compute** — `compute_unit_components()` → 10 полей
+6. **scales** — `build_scale_item()` для каждого из 10 компонентов (start/end width)
+7. **pie** — сегменты из period_components (без is_summary)
+8. **tariffs** — `get_commission_tariffs_cached()` → `resolve_standard_commission_rate()` → `build_tariff_actual_row()`
 
 ### 2.10 state.js — система состояния
 
-**5 ключевых структур** (`state.js`):
+**5 структур:** `state`, `sectionDates`, `productFilters`, `sectionOverrides`, `unitEconomics`.
 
-1. **`state`** — `{currentPage, dashboardData, products, unitEconomics, API_BASE}`
-2. **`sectionDates`** — `{general, kpi, funnel, tables, ue_block1, ue_block2}` → `{from, to}`
-3. **`productFilters`** — те же ключи → `[id1, id2, ...]`
-4. **`sectionOverrides`** — те же ключи (кроме general) → `{date: bool, product: bool}`
-5. **`unitEconomics`** — `{ue_block1: null | payload, ue_block2: null | payload}`
-
-**Все методы (20 шт):**
-
-| Метод | Сигнатура | Описание |
-|---|---|---|
-| `getCurrentPage()` | → `string` | Текущая страница |
-| `setCurrentPage(pageId)` | → void | Установить страницу |
-| `getDashboardData()` | → `object | null` | Данные дашборда |
-| `setDashboardData(data)` | → `object` | Сохранить данные |
-| `getProducts()` | → `array` | Список товаров |
-| `setProducts(products)` | → void | Установить товары |
-| `getProductOption(productId)` | → `object | null` | Найти товар по id |
-| `getDateFilters(sectionId?)` | → `{from, to}` | Даты секции (клон) |
-| `setDateFilters(filters, sectionId?, options?)` | → void | Обновить даты + propagate |
-| `resetDateOverride(sectionId)` | → void | Сбросить override дат |
-| `getProductFilters(sectionId?)` | → `array` | Фильтр товаров (клон) |
-| `setProductFilters(sectionId, selected, options?)` | → void | Обновить фильтр + propagate |
-| `resetProductOverride(sectionId)` | → void | Сбросить override товаров |
-| `getSectionOverrides(sectionId)` | → `{date, product}` | Флаги override |
-| `getUnitEconomicsData(sectionId)` | → `any` | Данные UE блока |
-| `setUnitEconomicsData(sectionId, payload)` | → `any` | Сохранить UE данные |
-| `resolveUnitProduct(sectionId)` | → `string | null` | Единственный товар для UE |
-| `renderCommandCenter()` | → void | Рендер командного центра |
-| `renderDateFilter(sectionId, options?)` | → HTML string | Рендер фильтров |
-| `renderProductDropdown(sectionId, options?)` | → HTML string | Рендер дропдауна |
-| `renderUnitEconomicsPage()` | → void | Рендер страницы UE |
-
-**Ключевой механизм — `propagateGeneralFilters()`:**
-Копирует `sectionDates.general` в `sectionDates[секция]` и `productFilters.general` в `productFilters[секция]` для ВСЕХ секций, у которых `sectionOverrides[секция].date === false` / `.product === false`.
+**Ключевой механизм:** `propagateGeneralFilters()` — копирует general во все не-override секции.
 
 ### 2.11 main.js — инициализация
 
-**`initialize()` (`main.js:303-319`):**
-```
-1. initNavigation()             — клики по вкладкам
-2. initUploadZone()             — drag'n'drop Excel
-3. initDateFilters()            — general даты = сегодня -7 дней
-4. renderHeaderFilters()        — даты + дропдаун в шапке
-5. updateDropdownButtons()      — синхронизация подписей
-6. app.initWbApi()              — восстановление WB ключа из localStorage
-7. app.checkHealth()
-     → GET /health
-     → loadFilterOptions()      — подгрузка списка товаров
-         → GET /api/filter-options
-         → app.setProducts()
-         → renderHeaderFilters()
-     → if data_loaded: loadDashboard()
-8. switchPage("command")        — показать командный центр
-```
+`initialize()`: navigation → upload zone → date filters → header → dropdown buttons → wb api → checkHealth → switchPage.
 
-**Глобальные функции (window.*):**
-- `toggleProductDropdown(button)` — открыть/закрыть дропдаун
-- `filterProductDropdown(input)` — поиск по товарам (НЕ РАБОТАЕТ)
-- `toggleProductItem(element)` — выбор товара (с поддержкой single-mode)
-- `applyProductFilters(sectionId)` — применить фильтр товаров
-- `resetProductFilters(sectionId)` — сбросить фильтр товаров
-- `applyDateFilter(sectionId)` — применить фильтр дат
-- `resetDateFilter(sectionId)` — сбросить фильтр дат
+**Глобальные функции:** toggleProductDropdown, filterProductDropdown (НЕ РАБОТАЕТ), toggleProductItem, applyProductFilters, resetProductFilters, applyDateFilter, resetDateFilter.
 
 ### 2.12 api.js — сетевые запросы
 
-| Функция | Метод | URL | Описание |
-|---|---|---|---|
-| `loadFilterOptions()` | GET | `/api/filter-options` | Список товаров |
-| `loadDashboard(ids?)` | 5×GET | `/api/dashboard/*` | Все данные командного центра |
-| `loadSummaryForSection(id)` | GET | `/api/dashboard/summary` | KPI+воронка для секции |
-| `loadUnitEconomics(sectionId)` | POST | `/api/unit-economics` | Юнит-экономика |
-| `uploadFile(file)` | POST | `/api/upload` | Загрузка Excel |
-| `fetchFromWbApi()` | POST | `/api/fetch-from-wb` | Загрузка WB API |
-| `resetData()` | POST | `/api/reset` | Сброс данных |
-| `checkHealth()` | GET | `/health` | Проверка статуса |
-| `getAIAnalysis()` | POST | `/api/ai/analyze` | AI-анализ |
-
-**Особенности:**
-- `loadDashboard()` — чекает каждый из 5 ответов. Если любой не `ok` → не обновляет данные, только логирует через `console.log`
-- `loadUnitEconomics()` — проверяет token, product, dates перед запросом. Возвращает `state: "needs_token" / "needs_product"` если чего-то не хватает
-- `uploadFile()` — использует `app.cleanText()` для очистки cp1252-искажений в сообщениях
-- Все запросы с `t: Date.now()` для предотвращения кэширования браузером
+9 функций (см. таблицу в разделе 1.11).
 
 ### 2.13 WB API client (wb_api_client.py)
 
-**Базовые URL:**
-- `https://statistics-api.wildberries.ru` — Sales Funnel, Finance
-- `https://common-api.wildberries.ru` — Тарифы комиссий
-
-**Функции (~428 строк):**
-
-| Функция | HTTP | URL | Параметры | Возврат |
-|---|---|---|---|---|
-| `fetch_sales_funnel()` | POST | `/api/analytics/v3/sales-funnel/products` | api_key, date_from, date_to, past_from, past_to | list[dict] — товары |
-| `fetch_search_report_overview()` | POST | `/api/v2/search-report/report` | api_key, date_from, date_to, past_from, past_to | dict — показы/CTR |
-| `fetch_sales_report_details_by_period()` | POST | `/api/finance/v1/sales-reports/detailed` | api_key, date_from, date_to, period, fields | list[dict] — строки |
-| `fetch_commission_tariffs()` | GET | `/api/v1/tariffs/commission` | api_key, locale | dict — ставки |
-| `map_api_to_internal()` | — | — | sales funnel list | internal list |
-| `resolve_periods()` | — | — | date_from, date_to, past?, past? | dict с периодами |
-
-**Rate limit:** 21 секунда при 429 (глобальный `asyncio.Lock` + `last_request_time`).
-**Максимум истории:** 365 дней (`MAX_HISTORY_DAYS = 365`).
-**Таймауты:** 30–60 секунд.
+4 функции API + 2 вспомогательные. Rate limit 21s, max 365 дней, таймауты 30–60s.
 
 ### 2.14 process_data — обогащение записей
 
-**Что:** применяется к данным из Excel и WB API. Добавляет:
-- Динамику: `orders_dynamics_pct`, `revenue_dynamics_pct` (через `calculate_dynamics(current, prev)`)
-- BCG-класс: `bcg_category` (через `classify_product()`)
-- Остаток: `total_stock = stock_wb + stock_mp`
-- Упущенную выручку: `lost_revenue` (если stock=0 и были продажи в prev)
-
-**Код:** `process_data()` (`main.py:733-780`). Принимает DataFrame → преобразует каждую строку в dict → возвращает list[dict].
+calculate_dynamics → classify_product → total_stock → lost_revenue.
 
 ### 2.15 render-command.js — рендер UI
 
-**Функции:**
-- `renderCommandCenter()` — рендер всей страницы командного центра. Проверяет `data === null` → ничего. Проверяет `!summary.kpi || !summary.funnel` → empty-state. Иначе → 5 блоков HTML
-- `renderKPI(label, data, type)` — карточка KPI (значение, динамика, разница, пред. период)
-- `renderFunnel(funnel)` — 3 полосы воронки (width пропорционален max)
-- `renderConversions(conversions)` — 3 шкалы конверсий с цветовой индикацией
-- `renderHitsTable(hits, sectionId)` — таблица хитов (фильтрация по выбранным товарам)
-- `renderOutsidersTable(outsiders)` — таблица проблем с badge и рекомендациями
-- `renderDateFilter(sectionId, options?)` — HTML фильтра дат + дропдаун товаров
-- `renderProductDropdown(sectionId, options?)` — HTML дропдауна товаров (с поиском, списком, кнопками)
-
-**Состояния:**
-- Empty-state для командного центра: два варианта — «Нет данных по выбранным товарам» (если товары есть) / «Загрузите данные» (если товаров нет)
+renderCommandCenter, renderKPI, renderFunnel, renderConversions, renderHitsTable, renderOutsidersTable, renderDateFilter, renderProductDropdown.
 
 ### 2.16 render-unit-economics.js — рендер UE
 
-**Функции:**
-- `renderUnitEconomicsPage()` — рендер двух блоков (ue_block1 + ue_block2) с фильтрами
-- `renderUnitBlockContent(sectionId, payload)` — диспетчер состояний:
-  - `null` → «Данные ещё не загружены»
-  - `payload.error` → текст ошибки
-  - `payload.state === "needs_token"` → «Нужен WB API токен»
-  - `payload.state === "needs_product"` → «Выберите один товар»
-  - `sectionId === "ue_block1"` → `renderScale()` + `renderUnitPie()`
-  - `sectionId === "ue_block2"` → `renderTariffsTable()`
-- `renderScale(scale)` — одна шкала: два сегмента (start/end), ширина в % от total
-- `renderUnitPie(pie)` — круговая диаграмма через conic-gradient + легенда
-- `renderTariffsTable(payload)` — таблица 8×6 колонок (стандарт/факт × начало/конец/изменение)
-- `renderTariffValue(value, kind)` — форматирование (pct → %, rub → ₽)
-- `renderTariffChange(value, kind)` — форматирование изменения (+/- п.п. или %)
+renderUnitEconomicsPage, renderUnitBlockContent (диспетчер состояний), renderScale, renderUnitPie, renderTariffsTable.
 
 ---
 
 ## Раздел 3. Неработающие / отключённые модули
 
-| Модуль | Статус | Причина / Описание |
+| Модуль | Статус | Причина |
 |---|---|---|
-| **Матрица BCG (UI)** | ❌ | `render-matrix.js` (118 строк) существует, но **не импортирован** в `dashboard.html`. Элемент `#matrixContent` отсутствует в DOM. Данные **получаются** (5-й запрос в `loadDashboard()`), **сохраняются** (`dashboardData.matrix`), но никогда не рендерятся. |
-| **План действий (UI)** | ❌ | `render-actions.js` (137 строк) существует, но **не импортирован**. Элемент `#actionsContent` отсутствует. Те же данные (`dashboardData.actions`) не рендерятся. |
-| **Гео-аналитика** | ❌ Заглушка | Вкладка в навигации есть. Контент: `<div class="empty-state">` с текстом «Страница подготовлена как отдельный раздел без наполнения.» |
-| **AI-анализ** | ⚠️ | Бэкенд (`POST /api/ai/analyze`) работает, но требует `ANTHROPIC_API_KEY` на сервере (Claude Sonnet 4). Без ключа — HTTP 500. Фронтенд не даёт ввести ключ. |
-| **Экспорт (CSV/PDF)** | ⚠️ | `export.js` существует, функции `exportMatrixToExcel()` и `exportActionsToExcel()` есть. Кнопки нигде не отображаются (т.к. матрица и действия не рендерятся). |
-| **Поиск в дропдауне товаров** | ❌ Баг | `filterProductDropdown()` в `main.js:132-140` проверяет `data-search` атрибут на совпадение с вводом. На практике — поиск не находит товары. |
-| **Постоянное хранение** | ❌ | DATA_STORE в оперативной памяти (словарь Python). При рестарте uvicorn все данные пропадают. |
-| **Юнит-экономика: шкалы (scale bars)** | ⚠️ | Работают частично. Баг: `start_rows = grouped_rows.get(date_from, [])` — берёт данные строго за одну дату. Если в `date_from` не было операций → start-сегмент нулевой. |
-| **Юнит-экономика: круговая диаграмма (pie)** | ⚠️ | Показывает всего 3 сегмента (вместо 8). Визуальный баг отрисовки conic-gradient — сегменты съезжают или накладываются. |
-| **Проверка stale ID товаров** | ⚠️ | В `loadDashboard()` (`api.js:312-318`) есть проверка устаревших ID в фильтрах, но она может не отрабатывать корректно во всех сценариях. |
+| Матрица BCG (UI) | ❌ | render-matrix.js не импортирован в HTML |
+| План действий (UI) | ❌ | render-actions.js не импортирован в HTML |
+| Гео-аналитика | ❌ Заглушка | «Страница подготовлена как отдельный раздел без наполнения.» |
+| AI-анализ | ⚠️ | Требует ANTHROPIC_API_KEY на сервере |
+| Экспорт (CSV/PDF) | ⚠️ | export.js есть, не подключён |
+| Поиск в дропдауне товаров | ❌ Баг | filterProductDropdown не находит товары |
+| Постоянное хранение | ❌ | In-memory DATA_STORE |
+| UE: шкалы | ⚠️ | Частично — баг с группировкой по точной дате |
+| UE: круговая диаграмма | ⚠️ | 3 сегмента вместо 8, визуальный баг градиента |
 
 ---
 
 ## Раздел 4. Сравнительный анализ (план vs реальность)
 
-### 4.1 Юнит-экономика: шкалы (scale bars)
+### 4.1 Юнит-экономика: шкалы
 
-**План:** шкала разделена на два сегмента — «на начало периода» (слева) и «на конец периода» (справа). Ширина каждого = доля компонента от выручки своей даты. Визуальное сравнение структуры затрат на старте и в конце периода.
+**План:** два сегмента — start (левая часть) и end (правая часть). Верно.
 
-**Реальность:** план верный, реализация недоделана. Конкретная проблема — в `get_unit_economics_payload()` (`main.py:595-601`):
-```python
-grouped_rows = group_report_rows_by_rr_date(matched_rows)  # группировка по точной дате
-start_rows = grouped_rows.get(date_from, [])                # ТОЛЬКО date_from
-end_rows = grouped_rows.get(date_to, [])                    # ТОЛЬКО date_to
-```
+**Проблема:** группировка по точной дате → если на date_from нет операций → start = 0.
 
-Если в день `date_from` (или `date_to`) не было операций у товара — `start_rows = []` / `end_rows = []` → сегмент не отображается.
+**Исправление:** логировать что нашлось, искать ближайшие даты с данными. Для date_to=сегодня — идти назад.
 
-**Что нужно исправить:**
-1. Проверить, есть ли данные на `date_from` и `date_to` (по отдельности и вместе)
-2. Записать в лог результат: «На date_from данных нет, на date_to есть N записей»
-3. Если на `date_from` данных нет — найти ближайшую дату ВПЕРЁД от `date_from`, на которой есть данные
-4. Если на `date_to` данных нет:
-   - Если `date_to` = сегодняшняя дата — идти НАЗАД (к более ранним датам)
-   - Иначе — идти назад от `date_to` к ближайшей дате с данными
-5. Вернуть пользователю сообщение: «Данные на указанные даты не найдены, есть данные на: [найденная_дата]»
+### 4.2 Юнит-экономика: круговая диаграмма
 
-### 4.2 Юнит-экономика: круговая диаграмма (pie chart)
+**План:** 8 сегментов, conic-gradient.
 
-**План:** наглядное отображение структуры затрат за весь период (8 сегментов, conic-gradient).
-
-**Реальность:** отображается только 3 сегмента (вместо 8 возможных). Визуальный баг градиента — сегменты съезжают или накладываются. Причина: или не все компоненты передаются с бэкенда, или фронтенд некорректно обрабатывает проценты (оффсет + stops).
+**Реальность:** 3 сегмента, визуальный баг градиента.
 
 ### 4.3 Фильтры
 
-**План:** общие фильтры (даты + товары) + локальные переопределения в каждом блоке.
-
-**Реальность:** план выполнен и перевыполнен. Каскадное наследование, нотификация при override, single-mode для UE — всё работает.
-
-**Единственный баг:** поиск в дропдауне товаров не работает (см. раздел 3).
+Выполнены и перевыполнены. Баг: поиск в дропдауне.
 
 ### 4.4 Матрица BCG + План действий
 
-**Текущее состояние:** бэкенд считает (`classify_product()`, `get_bcg_matrix()`, `get_actions()`), фронтенд запрашивает (5-й запрос в `loadDashboard()`), данные сохраняются в `dashboardData`, но **никогда не рендерятся**.
-
-**Решение: удалить.** Пользователю нужна только аналитика — цифры, графики, структура затрат. Принимать решения (A/B тест, пополнить остатки, оптимизировать цену) — ответственность пользователя, не приложения.
-
-**План действий:**
-1. Удалить вызовы `/api/dashboard/matrix` и `/api/dashboard/actions` из `loadDashboard()` в `api.js`
-2. Удалить `render-matrix.js` и `render-actions.js` из проекта
-3. Можно оставить `bcg_category` как внутреннее поле товара (для сортировки/фильтрации), но не показывать пользователю
-4. (Опционально) удалить `get_bcg_matrix()` и `get_actions()` из `main.py`
+**Решение: удалить.** Пользователь сам принимает решения. Бэкенд считает, фронтенд не рендерит — мёртвый код.
 
 ### 4.5 AI-анализ
 
-**План:** нейросеть для анализа данных продаж.
+Работает только с ANTHROPIC_API_KEY. План: замена на бесплатную модель (TBD).
 
-**Реальность:** бэкенд работает (Claude Sonnet 4 через Anthropic SDK). Фронтенд показывает блок с кнопкой. Но:
-- Требует `ANTHROPIC_API_KEY` на сервере
-- В РФ/Китае нужен VPN для доступа к Claude
-- Нет UI для ввода ключа
+### 4.6 Деплой
 
-**План замены:** подключить бесплатную нейросеть (DeepSeek, YandexGPT или локальную через Ollama). Модель TBD.
+Отложено. In-memory остаётся.
 
-### 4.6 Деплой (Railway)
+### 4.7 Отсутствующие функции
 
-**План:** деплой на Railway для доступа из интернета.
-
-**Реальность:** `Procfile` + `railway.json` настроены, Nixpacks builder, порт через `$PORT`. Не тестировалось.
-
-**Решение:** отложено. DATA_STORE остаётся in-memory.
-
-### 4.7 Отсутствующие функции (подробно)
-
-#### 4.7.1 Сравнение произвольных периодов
-
-**Сейчас:** в каждой KPI-карточке есть автоматический prev_period (прошлая неделя). Сервер сам рассчитывает динамику от предыдущего периода той же длины.
-
-**Чего нет:** пользователь не может выбрать ДВА независимых периода (например, январь vs март) и увидеть их бок о бок. Нет UI для выбора «Период А» и «Период Б» с дублированием всех метрик.
-
-**Статус:** пока не реализуется. Запланировано на будущее.
-
-#### 4.7.2 Ручной ввод себестоимости
-
-**Сейчас:** `payout` (выручка минус комиссии WB) ≠ чистая прибыль. Закупочная цена, доставка до WB, упаковка не учитываются.
-
-**Нужно:** поля для каждого товара (закупка, доставка, упаковка, прочие) → расчёт `чистая_прибыль = payout — себестоимость`.
-
-**ВАЖНО:** перед реализацией нужно детально продумать:
-- Как и где вводить данные (модальное окно, inline-редактирование, отдельная таблица)?
-- Как хранить (localStorage, новый endpoint, DATA_STORE)?
-- Как рассчитывать (фронтенд или бэкенд)?
-- Как быть с разными единицами товара (штуки, кг, комплекты)?
-- Что если себестоимость > payout (убыток)?
-- Нужна ли история изменения себестоимости?
-
-**Статус:** не реализовано. Требует ТЗ.
-
-#### 4.7.3 Гео-аналитика
-
-**Сейчас:** заглушка «Страница подготовлена как отдельный раздел без наполнения.»
-
-**План:**
-- Карта РФ с регионами
-- Таблица «Регион → Выручка → Заказы → Процент»
-- Фильтр по датам и товарам
-
-#### 4.7.4 Кэширование на фронтенде
-
-**Сейчас:** каждый вызов `loadDashboard()` / `loadUnitEconomics()` делает HTTP-запрос, даже если фильтры не менялись.
-
-**Нужно:** при условии, что с первого запроса пришли все данные — сохранять ответ на фронтенде и не перезапрашивать при тех же фильтрах. Инвалидация кэша при смене данных (reset, upload).
-
-#### 4.7.5 Страница отладки
-
-Возможно стоит добавить отдельную страницу (или режим/консольный логгер) с отображением:
-- Какие запросы уходят на сервер (URL, параметры)
-- Какие приходят ответы (статус, тело, ошибки)
-- Какие данные сейчас в state (dashboardData, products, sectionDates, productFilters)
-- Какие ошибки выскакивают (конкретный endpoint, конкретная переменная)
-
-Это поможет быстро выявлять: не передаёт ли какой-то endpoint данные, не падает ли конкретная переменная.
+- Сравнение произвольных периодов — запланировано на будущее
+- Ручной ввод себестоимости — требует детального ТЗ
+- Гео-аналитика — заглушка
+- Кэширование на фронтенде — при условии полных данных с первого запроса
+- Страница отладки — возможно, для диагностики проблем
 
 ---
 
 ## Приложение A: Все роуты FastAPI
 
-| Маршрут | Метод | Функция | Статус |
-|---|---|---|---|
-| `/` | GET | `serve_dashboard()` | ✅ |
-| `/health` | GET | `health_check()` | ✅ |
-| `/api/upload` | POST | `upload_file()` | ✅ |
-| `/api/fetch-from-wb` | POST | `fetch_from_wb()` | ✅ |
-| `/api/reset` | POST | `reset_data()` | ✅ |
-| `/api/filter-options` | GET | `get_filter_options()` | ✅ |
-| `/api/dashboard/summary` | GET | `get_dashboard_summary()` | ✅ |
-| `/api/dashboard/hits` | GET | `get_hits()` | ✅ |
-| `/api/dashboard/outsiders` | GET | `get_outsiders()` | ✅ |
-| `/api/dashboard/matrix` | GET | `get_bcg_matrix()` | ✅ (будет удалён) |
-| `/api/dashboard/actions` | GET | `get_actions()` | ✅ (будет удалён) |
-| `/api/unit-economics` | POST | `get_unit_economics()` | ✅ |
-| `/api/ai/analyze` | POST | `ai_analyze()` | ✅ (условно) |
-| `/api/products` | GET | `get_products()` | ✅ |
-| `/api/categories` | GET | `get_categories()` | ✅ |
+| Маршрут | Метод | Статус |
+|---|---|---|
+| `/` | GET | ✅ |
+| `/health` | GET | ✅ |
+| `/api/upload` | POST | ✅ |
+| `/api/fetch-from-wb` | POST | ✅ |
+| `/api/reset` | POST | ✅ |
+| `/api/filter-options` | GET | ✅ |
+| `/api/dashboard/summary` | GET | ✅ |
+| `/api/dashboard/hits` | GET | ✅ |
+| `/api/dashboard/outsiders` | GET | ✅ |
+| `/api/dashboard/matrix` | GET | ✅ (будет удалён) |
+| `/api/dashboard/actions` | GET | ✅ (будет удалён) |
+| `/api/unit-economics` | POST | ✅ |
+| `/api/ai/analyze` | POST | ✅ (условно) |
+| `/api/products` | GET | ✅ |
+| `/api/categories` | GET | ✅ |
 
 ---
 
-## Приложение B: Git-история (11 коммитов)
+## Приложение B: Git-история
 
 ```
 e412887 docs: comprehensive technical documentation for AI handoff
@@ -1095,4 +643,3 @@ bc2e782 Add anthropic to requirements.txt
 - **uvicorn:** 0.46.0
 - **pandas:** 3.0.0 (в requirements.txt указана 2.1.3)
 - **Сервер:** `http://127.0.0.1:8001`
-- **Логи:** ранее `uvicorn-8001.out.log` / `uvicorn-8001.err.log` (удалены)
